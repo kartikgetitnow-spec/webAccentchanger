@@ -70,9 +70,10 @@ export function useGeminiVoice({
 
       const data: TokenApiResponse = await res.json();
       return data;
-    } catch (err: any) {
+    } catch (err: unknown) {
       if (isMountedRef.current) {
-        setError(err.message || 'Failed to obtain Gemini token');
+        const msg = err instanceof Error ? err.message : 'Failed to obtain Gemini token';
+        setError(msg);
       }
       return null;
     }
@@ -219,9 +220,10 @@ export function useGeminiVoice({
             setError(`WebSocket closed unexpectedly (code ${event.code})`);
           }
         };
-      } catch (err: any) {
+      } catch (err: unknown) {
         if (active) {
-          setError(err.message || 'Failed to initialize WebSocket');
+          const msg = err instanceof Error ? err.message : 'Failed to initialize WebSocket';
+          setError(msg);
         }
       }
     }

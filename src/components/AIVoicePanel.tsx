@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Sparkles, Mic, Volume2, AlertCircle, CheckCircle2, Loader2, Wand2 } from 'lucide-react';
+import { Sparkles, Volume2, AlertCircle, CheckCircle2, Loader2 } from 'lucide-react';
 import { useVoiceStore } from '@/store/useVoiceStore';
 import { useCallStore } from '@/store/useCallStore';
 
@@ -42,7 +42,14 @@ export const AIVoicePanel: React.FC<AIVoicePanelProps> = ({
     setIsPreviewing(true);
 
     try {
-      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const AudioCtx =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      if (!AudioCtx) {
+        setIsPreviewing(false);
+        return;
+      }
+      const ctx = new AudioCtx();
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
 

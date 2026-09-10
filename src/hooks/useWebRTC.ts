@@ -24,6 +24,10 @@ interface UseWebRTCOptions {
   voice?: string;
 }
 
+interface PeerWithPC extends SimplePeerInstance {
+  _pc?: RTCPeerConnection;
+}
+
 const SPEAKING_ENTER_THRESHOLD = 25;
 const SPEAKING_EXIT_THRESHOLD = 15;
 const UPDATE_THROTTLE_MS = 100;
@@ -231,8 +235,9 @@ export function useWebRTC({
   }, []);
 
   // Pipe Gemini audio chunks into aiDestination stream
+  const { onAudioResponse } = geminiVoice;
   useEffect(() => {
-    const unsubscribe = geminiVoice.onAudioResponse((pcmChunk: ArrayBuffer) => {
+    const unsubscribe = onAudioResponse((pcmChunk: ArrayBuffer) => {
       const ctx = getAudioContext();
       if (!ctx || !aiDestinationRef.current) return;
       if (ctx.state === 'suspended') {
@@ -259,7 +264,7 @@ export function useWebRTC({
     return () => {
       unsubscribe();
     };
-  }, [geminiVoice.onAudioResponse, getAudioContext]);
+  }, [onAudioResponse, getAudioContext]);
 
   // Stable initializeLocalStream (no geminiVoice dependency)
   const initializeLocalStream = useCallback(async (): Promise<MediaStream | null> => {
@@ -327,15 +332,16 @@ export function useWebRTC({
 
       peersRef.current.forEach((peer) => {
         try {
-          if (typeof (peer as any).replaceTrack === 'function' && oldTrack) {
-            (peer as any).replaceTrack(
+          const peerWithPc = peer as PeerWithPC;
+          if (typeof peerWithPc.replaceTrack === 'function' && oldTrack) {
+            peerWithPc.replaceTrack(
               oldTrack,
               newTrack,
               enabled ? aiDestinationRef.current!.stream : localStreamRef.current!
             );
           } else {
-            const senders = (peer as any)._pc?.getSenders?.() || [];
-            const audioSender = senders.find((s: any) => s.track?.kind === 'audio');
+            const senders: RTCRtpSender[] = peerWithPc._pc?.getSenders() || [];
+            const audioSender = senders.find((s) => s.track?.kind === 'audio');
             if (audioSender) {
               audioSender.replaceTrack(newTrack);
             }
