@@ -64,18 +64,64 @@ export function resampleAudio(
 /**
  * Creates an audio processor node that captures microphone audio,
  * downsamples it to 16kHz mono, and emits Int16Array PCM chunks for Gemini.
+ * Uses modern AudioWorkletNode if supported by browser, with graceful fallback to ScriptProcessorNode.
  */
-export function createAudioWorkletNode(
+export async function createAudioWorkletNode(
   context: AudioContext,
   onAudioChunk: (pcm16: Int16Array) => void,
   bufferSize = 4096
-): ScriptProcessorNode {
-  // Uses ScriptProcessorNode for universal browser compatibility
-  const processor = context.createScriptProcessor(bufferSize, 1, 1);
+): Promise<AudioNode> {
+  if (typeof AudioWorkletNode !== 'undefined' && context.audioWorklet) {
+    try {
+      const processorCode = `
+class GeminiVoiceCaptureProcessor extends AudioWorkletProcessor {
+  process(inputs) {
+    const input = inputs[0];
+    if (input && input[0] && input[0].length > 0) {
+      this.port.postMessage(input[0]);
+    }
+    return true;
+  }
+}
+registerProcessor('gemini-voice-capture', GeminiVoiceCaptureProcessor);
+`;
+      const blob = new Blob([processorCode], { type: 'application/javascript' });
+      const moduleUrl = URL.createObjectURL(blob);
+      try {
+        await context.audioWorklet.addModule(moduleUrl);
+      } finally {
+        URL.revokeObjectURL(moduleUrl);
+      }
 
+      const workletNode = new AudioWorkletNode(context, 'gemini-voice-capture');
+      const sampleAccumulator: number[] = [];
+
+      workletNode.port.onmessage = (event: MessageEvent<Float32Array>) => {
+        const float32Chunk = event.data;
+        if (!float32Chunk || float32Chunk.length === 0) return;
+
+        const resampled = resampleAudio(float32Chunk, context.sampleRate, 16000);
+        for (let i = 0; i < resampled.length; i++) {
+          sampleAccumulator.push(resampled[i]);
+        }
+
+        while (sampleAccumulator.length >= 1024) {
+          const slice = new Float32Array(sampleAccumulator.splice(0, 1024));
+          const pcm16 = convertFloat32ToInt16(slice);
+          onAudioChunk(pcm16);
+        }
+      };
+
+      return workletNode;
+    } catch (workletError) {
+      console.warn('[audioProcessor] AudioWorkletNode init failed, falling back to ScriptProcessorNode:', workletError);
+    }
+  }
+
+  // Fallback to ScriptProcessorNode for environments without AudioWorklet support
+  const processor = context.createScriptProcessor(bufferSize, 1, 1);
   processor.onaudioprocess = (event: AudioProcessingEvent) => {
     const inputBuffer = event.inputBuffer.getChannelData(0);
-    // Downsample from AudioContext sample rate (usually 44100 or 48000) to 16000
     const resampled = resampleAudio(inputBuffer, context.sampleRate, 16000);
     const pcm16 = convertFloat32ToInt16(resampled);
     onAudioChunk(pcm16);

@@ -50,8 +50,14 @@ export function useGeminiVoice({
   // Helper to fetch ephemeral token from server
   const fetchToken = useCallback(async (): Promise<TokenApiResponse | null> => {
     try {
-      const baseUrl = process.env.NEXT_PUBLIC_GEMINI_SERVER_URL || 'http://localhost:8000';
-      const res = await fetch(`${baseUrl}/api/token`, {
+      let baseUrl = process.env.NEXT_PUBLIC_GEMINI_SERVER_URL || 'https://65-2-161-214.sslip.io';
+      if (baseUrl.includes('65.2.161.214') && !baseUrl.includes('sslip.io')) {
+        baseUrl = 'https://65-2-161-214.sslip.io';
+      }
+      const isHttps = typeof window !== 'undefined' && window.location.protocol === 'https:';
+      const tokenUrl = isHttps && baseUrl.startsWith('http://') ? '/api/token' : `${baseUrl.replace(/\/+$/, '')}/api/token`;
+
+      const res = await fetch(tokenUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -152,9 +158,15 @@ export function useGeminiVoice({
         }
       }, refreshDelaySec * 1000);
 
-      // Open WebSocket to ${NEXT_PUBLIC_GEMINI_SERVER_URL}/ws/gemini
-      const baseUrl = process.env.NEXT_PUBLIC_GEMINI_SERVER_URL || 'http://localhost:8000';
-      const wsEndpoint = baseUrl.replace(/^http(s)?:\/\//, (_, s) => (s ? 'wss://' : 'ws://')) + '/ws/gemini';
+      // Open WebSocket to Gemini bridge (using wss:// over HTTPS)
+      let baseUrl = process.env.NEXT_PUBLIC_GEMINI_SERVER_URL || 'https://65-2-161-214.sslip.io';
+      if (baseUrl.includes('65.2.161.214') && !baseUrl.includes('sslip.io')) {
+        baseUrl = 'https://65-2-161-214.sslip.io';
+      }
+      let wsEndpoint = baseUrl.replace(/^http(s)?:\/\//, (_, s) => (s ? 'wss://' : 'ws://')).replace(/\/+$/, '') + '/ws/gemini';
+      if (typeof window !== 'undefined' && window.location.protocol === 'https:' && wsEndpoint.startsWith('ws://')) {
+        wsEndpoint = wsEndpoint.replace('ws://', 'wss://');
+      }
 
       try {
         const socket = new WebSocket(wsEndpoint);

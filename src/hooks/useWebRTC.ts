@@ -85,7 +85,7 @@ export function useWebRTC({
   // Audio nodes
   const aiDestinationRef = useRef<MediaStreamAudioDestinationNode | null>(null);
   const aiNextPlayTimeRef = useRef<number>(0);
-  const processorNodeRef = useRef<ScriptProcessorNode | null>(null);
+  const processorNodeRef = useRef<AudioNode | null>(null);
   const micSourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const silentGainRef = useRef<GainNode | null>(null);
 
@@ -286,7 +286,7 @@ export function useWebRTC({
         const micSource = ctx.createMediaStreamSource(stream);
         micSourceNodeRef.current = micSource;
 
-        const processor = createAudioWorkletNode(ctx, (pcm16) => {
+        const processor = await createAudioWorkletNode(ctx, (pcm16) => {
           if (useAIVoiceRef.current && !isMutedRef.current && geminiVoiceRef.current?.isConnected) {
             geminiVoiceRef.current.sendAudio(pcm16.buffer as ArrayBuffer);
           }
@@ -333,13 +333,19 @@ export function useWebRTC({
       peersRef.current.forEach((peer) => {
         try {
           const peerWithPc = peer as PeerWithPC;
-          if (typeof peerWithPc.replaceTrack === 'function' && oldTrack) {
-            peerWithPc.replaceTrack(
-              oldTrack,
-              newTrack,
-              enabled ? aiDestinationRef.current!.stream : localStreamRef.current!
-            );
-          } else {
+          const oldStream = enabled ? localStreamRef.current : aiDestinationRef.current?.stream;
+          let replaced = false;
+
+          if (oldTrack && oldStream && typeof peerWithPc.replaceTrack === 'function') {
+            try {
+              peerWithPc.replaceTrack(oldTrack, newTrack, oldStream);
+              replaced = true;
+            } catch {
+              // If simple-peer senderMap does not match the track, fall back to native RTCRtpSender
+            }
+          }
+
+          if (!replaced) {
             const senders: RTCRtpSender[] = peerWithPc._pc?.getSenders() || [];
             const audioSender = senders.find((s) => s.track?.kind === 'audio');
             if (audioSender) {
