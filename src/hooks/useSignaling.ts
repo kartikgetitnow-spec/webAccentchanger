@@ -27,7 +27,21 @@ export function useSignaling(options: UseSignalingOptions = {}) {
   const connect = useCallback(() => {
     if (socketRef.current?.connected) return socketRef.current;
 
-    const socket = io(serverUrl, {
+    let targetUrl = serverUrl;
+    const isPrivateLanIp =
+      typeof window !== 'undefined' &&
+      /^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)/.test(
+        window.location.hostname
+      );
+
+    if (
+      isPrivateLanIp &&
+      (serverUrl.includes('localhost') || serverUrl.includes('127.0.0.1'))
+    ) {
+      targetUrl = `${window.location.protocol}//${window.location.hostname}:3001`;
+    }
+
+    const socket = io(targetUrl, {
       transports: ['websocket'],
       autoConnect: true,
     });

@@ -420,12 +420,16 @@ export function useWebRTC({
         return;
       }
 
-      // Automatically adapt to host IP if accessed via LAN
+      // Automatically adapt to host IP if accessed via private LAN IP (e.g. 10.x, 192.168.x)
       let targetUrl = serverUrl;
-      if (
+      const isPrivateLanIp =
         typeof window !== 'undefined' &&
-        window.location.hostname !== 'localhost' &&
-        window.location.hostname !== '127.0.0.1' &&
+        /^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)/.test(
+          window.location.hostname
+        );
+
+      if (
+        isPrivateLanIp &&
         (serverUrl.includes('localhost') || serverUrl.includes('127.0.0.1'))
       ) {
         targetUrl = `${window.location.protocol}//${window.location.hostname}:3001`;
