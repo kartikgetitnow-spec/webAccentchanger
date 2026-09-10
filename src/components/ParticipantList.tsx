@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Mic, MicOff, User, Radio } from 'lucide-react';
+import { Mic, MicOff, User, Radio, Sparkles } from 'lucide-react';
 import { Participant } from '@/lib/types';
 
 interface ParticipantListProps {
@@ -89,6 +89,15 @@ export default function ParticipantList({
               >
                 {/* Status pill top-right */}
                 <div className="absolute top-4 right-4 flex items-center gap-1.5">
+                  {participant.useAIVoice && (
+                    <span
+                      className="px-1.5 py-0.5 bg-indigo-500/20 text-indigo-300 rounded-full border border-indigo-500/40 text-[10px] font-semibold flex items-center gap-1 shadow-[0_0_8px_rgba(99,102,241,0.25)]"
+                      title="AI Voice enabled"
+                    >
+                      <Sparkles className="w-2.5 h-2.5 text-indigo-400" />
+                      AI
+                    </span>
+                  )}
                   {participant.isMuted ? (
                     <span
                       className="p-1.5 bg-red-500/15 text-red-400 rounded-full border border-red-500/30 shadow-[0_0_10px_rgba(239,68,68,0.2)]"

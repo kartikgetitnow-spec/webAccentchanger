@@ -149,17 +149,19 @@ io.on('connection', (socket) => {
     socket.join(roomId);
     socketRoomMap.set(socket.id, roomId);
 
+    // Step 17.2: Store useAIVoice in participant metadata
     const participant = {
       id: socket.id,
       name: userData?.name || `User-${socket.id.slice(0, 4)}`,
       isMuted: Boolean(userData?.isMuted),
       isSpeaking: false,
+      useAIVoice: Boolean(userData?.useAIVoice),
     };
 
     const existingParticipants = Array.from(roomParticipants.values());
     roomParticipants.set(socket.id, participant);
 
-    // Send room-joined event to newcomer
+    // Step 17.3: Include useAIVoice in the initial room-joined payload
     socket.emit('room-joined', {
       roomId,
       self: participant,
@@ -177,9 +179,39 @@ io.on('connection', (socket) => {
         socketId: socket.id,
         participantName: participant.name,
         roomId,
+        useAIVoice: participant.useAIVoice,
         roomSize: roomParticipants.size,
       },
       'User successfully joined room'
+    );
+  });
+
+  // Step 17.1 & 17.4: Handle ai-voice-toggle and broadcast ai-voice-toggled & participant-updated
+  socket.on('ai-voice-toggle', ({ useAIVoice }) => {
+    const roomId = socketRoomMap.get(socket.id);
+    if (!roomId || !rooms.has(roomId)) return;
+
+    const participant = rooms.get(roomId).get(socket.id);
+    if (participant) {
+      participant.useAIVoice = Boolean(useAIVoice);
+    }
+
+    // Broadcast ai-voice-toggled to other peers in room
+    socket.to(roomId).emit('ai-voice-toggled', {
+      userId: socket.id,
+      useAIVoice: Boolean(useAIVoice),
+    });
+
+    // Emit participant-updated to room
+    io.to(roomId).emit('participant-updated', {
+      userId: socket.id,
+      useAIVoice: Boolean(useAIVoice),
+      participant,
+    });
+
+    logger.debug(
+      { socketId: socket.id, roomId, useAIVoice },
+      'User toggled AI voice'
     );
   });
 
@@ -271,10 +303,8 @@ server.listen(PORT, () => {
 function gracefulShutdown(signal) {
   logger.info(`Received ${signal}. Starting graceful shutdown...`);
 
-  // Disconnect all sockets
   io.disconnectSockets(true);
 
-  // Clear pending timers
   emptyRoomTimers.forEach((timer) => clearTimeout(timer));
   emptyRoomTimers.clear();
 
@@ -283,7 +313,6 @@ function gracefulShutdown(signal) {
     process.exit(0);
   });
 
-  // Force exit if hanging
   setTimeout(() => {
     logger.error('Graceful shutdown timed out. Forcing termination.');
     process.exit(1);

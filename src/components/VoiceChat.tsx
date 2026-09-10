@@ -3,19 +3,26 @@
 import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
-import { Copy, Check, Shield } from 'lucide-react';
+import { Copy, Check, Shield, Sparkles } from 'lucide-react';
 import { useWebRTC } from '@/hooks/useWebRTC';
 import { useCallStore } from '@/store/useCallStore';
+import { useVoiceStore } from '@/store/useVoiceStore';
 import { audioManager } from '@/lib/audioManager';
 import ParticipantList from '@/components/ParticipantList';
 import AudioControls from '@/components/AudioControls';
+import AIVoicePanel from '@/components/AIVoicePanel';
 
 interface VoiceChatProps {
   roomId: string;
   userName: string;
+  useAIVoice?: boolean;
 }
 
-export default function VoiceChat({ roomId, userName }: VoiceChatProps) {
+export default function VoiceChat({
+  roomId,
+  userName,
+  useAIVoice: initialUseAIVoice,
+}: VoiceChatProps) {
   const router = useRouter();
   const [copied, setCopied] = useState(false);
 
@@ -24,15 +31,22 @@ export default function VoiceChat({ roomId, userName }: VoiceChatProps) {
   const setMasterVolume = useCallStore((state) => state.setMasterVolume);
   const resetCallStore = useCallStore((state) => state.reset);
 
+  const { useAIVoice: storeUseAIVoice, selectedVoice } = useVoiceStore();
+  const currentUseAIVoice =
+    initialUseAIVoice !== undefined ? initialUseAIVoice : storeUseAIVoice;
+
   const {
     participants,
     isMuted,
     connectionStatus,
     toggleMute,
     leaveRoom,
+    setAIVoice,
   } = useWebRTC({
     roomId,
     userName,
+    useAIVoice: currentUseAIVoice,
+    voice: selectedVoice,
   });
 
   // Memoize participants list to prevent reference instability
@@ -135,9 +149,21 @@ export default function VoiceChat({ roomId, userName }: VoiceChatProps) {
           </button>
         </div>
 
-        {/* Right: Encryption & Connection Status Badge */}
+        {/* Right: AI Voice Badge, Encryption & Connection Status Badge */}
         <div className="flex items-center gap-3">
-          <div className="hidden sm:flex items-center gap-1.5 text-xs text-zinc-400 bg-zinc-900/60 px-3 py-1 rounded-full border border-white/5">
+          {/* AI Voice Badge */}
+          <div
+            className={`hidden sm:flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full border transition-all ${
+              currentUseAIVoice
+                ? 'border-indigo-500/30 bg-indigo-500/10 text-indigo-300 shadow-[0_0_12px_rgba(99,102,241,0.2)]'
+                : 'border-zinc-800 bg-zinc-900/60 text-zinc-500'
+            }`}
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            <span>AI Voice: {currentUseAIVoice ? 'ON' : 'OFF'}</span>
+          </div>
+
+          <div className="hidden md:flex items-center gap-1.5 text-xs text-zinc-400 bg-zinc-900/60 px-3 py-1 rounded-full border border-white/5">
             <Shield className="w-3.5 h-3.5 text-indigo-400" />
             <span>P2P Encrypted</span>
           </div>
@@ -169,8 +195,12 @@ export default function VoiceChat({ roomId, userName }: VoiceChatProps) {
       </header>
 
       {/* Main Content Area */}
-      <main className="flex-1 overflow-y-auto px-4 sm:px-8 py-8 flex flex-col items-center relative z-10">
-        <div className="max-w-6xl w-full flex-1 flex flex-col">
+      <main className="flex-1 overflow-y-auto px-4 sm:px-8 py-6 flex flex-col items-center relative z-10">
+        <div className="max-w-6xl w-full flex-1 flex flex-col gap-6">
+          {/* AI Voice Transformation Control Panel */}
+          <AIVoicePanel onToggleAIVoice={setAIVoice} />
+
+          {/* Active Call Participants */}
           <ParticipantList
             participants={participantsList}
             onCopyRoomLink={handleCopyLink}

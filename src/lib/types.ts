@@ -5,6 +5,7 @@ export enum MessageType {
   JOIN = 'JOIN',
   LEAVE = 'LEAVE',
   MUTE_TOGGLE = 'MUTE_TOGGLE',
+  AI_VOICE_TOGGLE = 'AI_VOICE_TOGGLE',
 }
 
 export interface Participant {
@@ -12,6 +13,7 @@ export interface Participant {
   name: string;
   isMuted: boolean;
   isSpeaking: boolean;
+  useAIVoice?: boolean;
   stream?: MediaStream;
 }
 

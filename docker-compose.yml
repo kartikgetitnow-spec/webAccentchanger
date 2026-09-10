@@ -1,39 +1,71 @@
-version: '3.8'
+version: "3.8"
 
 services:
+  # Python FastAPI Gemini Voice Token Server & WebSocket Bridge
+  gemini:
+    build:
+      context: ./gemini-server
+      dockerfile: Dockerfile
+    container_name: gemini-voice-server
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./gemini-server/.env
+    environment:
+      - PORT=8000
+      - HOST=0.0.0.0
+      - ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+  # Node.js Socket.IO WebRTC Signaling Server
   signaling:
     build:
       context: ./server
       dockerfile: Dockerfile
-    container_name: webrtc-signaling
-    restart: unless-stopped
+    container_name: webrtc-signaling-server
     ports:
-      - '3001:3001'
+      - "3001:3001"
     environment:
       - PORT=3001
       - CLIENT_URL=http://localhost:3000
       - LOG_LEVEL=info
       - MAX_PARTICIPANTS=10
-      # Optional TURN server config:
-      # - TURN_URL=turn:turn.example.com:3478
-      # - TURN_USERNAME=user
-      # - TURN_CREDENTIAL=pass
     healthcheck:
-      test: ['CMD', 'wget', '--no-verbose', '--tries=1', '--spider', 'http://localhost:3001/health']
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3001/health', (res) => { process.exit(res.statusCode === 200 ? 0 : 1); });"]
       interval: 15s
       timeout: 5s
       retries: 3
+      start_period: 5s
+    restart: unless-stopped
 
-  web:
+  # Next.js 14 WebRTC Audio Calling Frontend
+  nextjs:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: webrtc-web
-    restart: unless-stopped
+    container_name: webrtc-voice-frontend
     ports:
-      - '3000:3000'
+      - "3000:3000"
     environment:
-      - NEXT_PUBLIC_SIGNALING_SERVER=http://localhost:3001
+      - PORT=3000
       - NODE_ENV=production
+      - NEXT_PUBLIC_SIGNALING_URL=http://localhost:3001
+      - NEXT_PUBLIC_GEMINI_SERVER_URL=http://localhost:8000
     depends_on:
-      - signaling
+      gemini:
+        condition: service_healthy
+      signaling:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000', (res) => { process.exit(res.statusCode < 500 ? 0 : 1); });"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped

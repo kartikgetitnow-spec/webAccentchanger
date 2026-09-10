@@ -6,6 +6,9 @@ import SimplePeer, { Instance as SimplePeerInstance } from 'simple-peer';
 import { Participant, MessageType } from '@/lib/types';
 import { ICE_SERVERS, AUDIO_CONSTRAINTS } from '@/lib/constants';
 import { audioManager } from '@/lib/audioManager';
+import { useGeminiVoice, UseGeminiVoiceReturn } from '@/hooks/useGeminiVoice';
+import { createAudioWorkletNode, convertInt16ToFloat32 } from '@/lib/audioProcessor';
+import { useCallStore, GeminiStatus } from '@/store/useCallStore';
 
 export type ConnectionStatus =
   | 'connecting'
@@ -17,13 +20,14 @@ interface UseWebRTCOptions {
   roomId: string;
   userName?: string;
   serverUrl?: string;
+  useAIVoice?: boolean;
+  voice?: string;
 }
 
-// Speaking detection thresholds (hysteresis)
-const SPEAKING_ENTER_THRESHOLD = 25; // Enter speaking above this RMS
-const SPEAKING_EXIT_THRESHOLD = 15; // Exit speaking below this RMS
-const UPDATE_THROTTLE_MS = 100; // 100ms throttle on state updates
-const ICE_CONNECTION_TIMEOUT_MS = 30000; // 30s ICE fallback timer
+const SPEAKING_ENTER_THRESHOLD = 25;
+const SPEAKING_EXIT_THRESHOLD = 15;
+const UPDATE_THROTTLE_MS = 100;
+const ICE_CONNECTION_TIMEOUT_MS = 30000;
 
 export function useWebRTC({
   roomId,
@@ -32,6 +36,8 @@ export function useWebRTC({
     process.env.NEXT_PUBLIC_SIGNALING_URL ||
     process.env.NEXT_PUBLIC_SIGNALING_SERVER ||
     'http://localhost:3001',
+  useAIVoice = false,
+  voice = 'Puck',
 }: UseWebRTCOptions) {
   // State
   const [participants, setParticipants] = useState<Map<string, Participant>>(new Map());
@@ -40,6 +46,30 @@ export function useWebRTC({
   const [isConnected, setIsConnected] = useState<boolean>(false);
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>('disconnected');
+  const [useAIVoiceState, setUseAIVoiceState] = useState<boolean>(useAIVoice);
+
+  // Sync with call store for Gemini status indicators
+  const setGeminiStatus = useCallStore((s) => s.setGeminiStatus);
+  const setGeminiError = useCallStore((s) => s.setGeminiError);
+
+  // Persistent stable user ID for Gemini token requirements
+  const userIdRef = useRef<string>('');
+  if (!userIdRef.current) {
+    const cleaned = userName.toLowerCase().replace(/[^a-z0-9_-]/g, '');
+    userIdRef.current = cleaned || `user_${Math.floor(Math.random() * 10000)}`;
+  }
+
+  // Hook for Gemini Voice
+  const geminiVoice: UseGeminiVoiceReturn = useGeminiVoice({
+    roomId,
+    userId: userIdRef.current,
+    voice,
+    enabled: true,
+  });
+
+  // Reference to geminiVoice to decouple callbacks from re-renders
+  const geminiVoiceRef = useRef<UseGeminiVoiceReturn>(geminiVoice);
+  geminiVoiceRef.current = geminiVoice;
 
   // Refs
   const socketRef = useRef<Socket | null>(null);
@@ -47,6 +77,19 @@ export function useWebRTC({
   const localStreamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const iceTimersRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
+
+  // Audio nodes
+  const aiDestinationRef = useRef<MediaStreamAudioDestinationNode | null>(null);
+  const aiNextPlayTimeRef = useRef<number>(0);
+  const processorNodeRef = useRef<ScriptProcessorNode | null>(null);
+  const micSourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const silentGainRef = useRef<GainNode | null>(null);
+
+  const useAIVoiceRef = useRef<boolean>(useAIVoiceState);
+  useAIVoiceRef.current = useAIVoiceState;
+
+  const isMutedRef = useRef<boolean>(isMuted);
+  isMutedRef.current = isMuted;
 
   const analyserRefs = useRef<
     Map<
@@ -61,13 +104,6 @@ export function useWebRTC({
     >
   >(new Map());
 
-  const isMutedRef = useRef<boolean>(isMuted);
-  isMutedRef.current = isMuted;
-
-  const participantsRef = useRef<Map<string, Participant>>(participants);
-  participantsRef.current = participants;
-
-  // AudioContext helper
   const getAudioContext = useCallback(() => {
     if (!audioContextRef.current) {
       audioContextRef.current = audioManager.getAudioContext();
@@ -78,7 +114,29 @@ export function useWebRTC({
     return audioContextRef.current;
   }, []);
 
-  // Update participant speaking state
+  // Sync Gemini status to Zustand store with strict equality check
+  useEffect(() => {
+    let targetStatus: GeminiStatus = 'idle';
+    let targetError: string | null = null;
+
+    if (geminiVoice.error) {
+      targetStatus = 'error';
+      targetError = geminiVoice.error;
+    } else if (geminiVoice.isConnected) {
+      targetStatus = 'ready';
+    } else if (useAIVoiceState) {
+      targetStatus = 'connecting';
+    }
+
+    const currentState = useCallStore.getState();
+    if (currentState.geminiStatus !== targetStatus) {
+      setGeminiStatus(targetStatus);
+    }
+    if (currentState.geminiError !== targetError) {
+      setGeminiError(targetError);
+    }
+  }, [geminiVoice.isConnected, geminiVoice.error, useAIVoiceState, setGeminiStatus, setGeminiError]);
+
   const updateSpeakingState = useCallback((participantId: string, speaking: boolean) => {
     setParticipants((prev) => {
       const target = prev.get(participantId);
@@ -89,34 +147,29 @@ export function useWebRTC({
     });
   }, []);
 
-  // Step 13: Speaking Detection Refinement with Time-Domain RMS & Hysteresis
   const setupSpeakingDetection = useCallback(
     (participantId: string, stream: MediaStream) => {
-      // Clean up previous detection for this participant
       if (analyserRefs.current.has(participantId)) {
         const existing = analyserRefs.current.get(participantId)!;
         cancelAnimationFrame(existing.animationFrameId);
         try {
           existing.source.disconnect();
           existing.analyser.disconnect();
-        } catch {
-          // Ignore disconnection error
-        }
+        } catch {}
         analyserRefs.current.delete(participantId);
       }
 
       try {
         const audioContext = getAudioContext();
+        if (stream.getAudioTracks().length === 0) return;
+
         const source = audioContext.createMediaStreamSource(stream);
         const analyser = audioContext.createAnalyser();
-
-        // Specific configuration as per Step 13
-        analyser.fftSize = 256;
-        analyser.smoothingTimeConstant = 0.3;
+        analyser.fftSize = 512;
+        analyser.smoothingTimeConstant = 0.4;
         source.connect(analyser);
 
-        const dataArray = new Uint8Array(analyser.fftSize);
-
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
         const record = {
           analyser,
           source,
@@ -126,21 +179,19 @@ export function useWebRTC({
         };
 
         const detect = () => {
-          // Time-domain RMS volume calculation
           analyser.getByteTimeDomainData(dataArray);
 
           let sumSquares = 0;
           for (let i = 0; i < dataArray.length; i++) {
-            const deviation = dataArray[i] - 128;
-            sumSquares += deviation * deviation;
+            const normalized = (dataArray[i] - 128) / 128;
+            sumSquares += normalized * normalized;
           }
-          const rms = Math.sqrt(sumSquares / dataArray.length);
+          const rms = Math.sqrt(sumSquares / dataArray.length) * 100;
 
           const isSelf =
             participantId === socketRef.current?.id || participantId === 'local';
           const isUserMuted = isSelf ? isMutedRef.current : false;
 
-          // Hysteresis logic: enter at > 25, exit at < 15
           let targetSpeaking = record.isSpeaking;
           if (isUserMuted) {
             targetSpeaking = false;
@@ -150,7 +201,6 @@ export function useWebRTC({
             targetSpeaking = false;
           }
 
-          // Throttle state updates to 100ms
           const now = Date.now();
           if (
             targetSpeaking !== record.isSpeaking &&
@@ -173,7 +223,45 @@ export function useWebRTC({
     [getAudioContext, updateSpeakingState]
   );
 
-  // Initialize local microphone
+  const getOutgoingStream = useCallback((): MediaStream | null => {
+    if (useAIVoiceRef.current && aiDestinationRef.current) {
+      return aiDestinationRef.current.stream;
+    }
+    return localStreamRef.current;
+  }, []);
+
+  // Pipe Gemini audio chunks into aiDestination stream
+  useEffect(() => {
+    const unsubscribe = geminiVoice.onAudioResponse((pcmChunk: ArrayBuffer) => {
+      const ctx = getAudioContext();
+      if (!ctx || !aiDestinationRef.current) return;
+      if (ctx.state === 'suspended') {
+        ctx.resume().catch(() => {});
+      }
+
+      const int16 = new Int16Array(pcmChunk);
+      if (int16.length === 0) return;
+      const float32 = convertInt16ToFloat32(int16);
+
+      const audioBuffer = ctx.createBuffer(1, float32.length, 24000);
+      audioBuffer.getChannelData(0).set(float32);
+
+      const source = ctx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(aiDestinationRef.current);
+
+      const currentTime = ctx.currentTime;
+      const startTime = Math.max(aiNextPlayTimeRef.current, currentTime);
+      source.start(startTime);
+      aiNextPlayTimeRef.current = startTime + audioBuffer.duration;
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [geminiVoice.onAudioResponse, getAudioContext]);
+
+  // Stable initializeLocalStream (no geminiVoice dependency)
   const initializeLocalStream = useCallback(async (): Promise<MediaStream | null> => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -183,50 +271,110 @@ export function useWebRTC({
 
       localStreamRef.current = stream;
       setLocalStream(stream);
+
+      const ctx = getAudioContext();
+      if (!aiDestinationRef.current) {
+        aiDestinationRef.current = ctx.createMediaStreamDestination();
+      }
+
+      if (!processorNodeRef.current) {
+        const micSource = ctx.createMediaStreamSource(stream);
+        micSourceNodeRef.current = micSource;
+
+        const processor = createAudioWorkletNode(ctx, (pcm16) => {
+          if (useAIVoiceRef.current && !isMutedRef.current && geminiVoiceRef.current?.isConnected) {
+            geminiVoiceRef.current.sendAudio(pcm16.buffer as ArrayBuffer);
+          }
+        });
+        processorNodeRef.current = processor;
+
+        const silentGain = ctx.createGain();
+        silentGain.gain.value = 0;
+        silentGainRef.current = silentGain;
+
+        micSource.connect(processor);
+        processor.connect(silentGain);
+        silentGain.connect(ctx.destination);
+      }
+
       return stream;
     } catch (err) {
       console.error('Failed to get user media (microphone access):', err);
       return null;
     }
-  }, []);
+  }, [getAudioContext]);
 
-  // Cleanup peer helper
+  const setAIVoice = useCallback(
+    (enabled: boolean) => {
+      setUseAIVoiceState(enabled);
+      useAIVoiceRef.current = enabled;
+
+      if (socketRef.current?.connected) {
+        socketRef.current.emit('ai-voice-toggle', { useAIVoice: enabled });
+      }
+
+      const ctx = getAudioContext();
+      if (!aiDestinationRef.current) {
+        aiDestinationRef.current = ctx.createMediaStreamDestination();
+      }
+
+      const aiTrack = aiDestinationRef.current.stream.getAudioTracks()[0];
+      const micTrack = localStreamRef.current?.getAudioTracks()[0];
+      const newTrack = enabled ? aiTrack : micTrack;
+      const oldTrack = enabled ? micTrack : aiTrack;
+
+      if (!newTrack) return;
+
+      peersRef.current.forEach((peer) => {
+        try {
+          if (typeof (peer as any).replaceTrack === 'function' && oldTrack) {
+            (peer as any).replaceTrack(
+              oldTrack,
+              newTrack,
+              enabled ? aiDestinationRef.current!.stream : localStreamRef.current!
+            );
+          } else {
+            const senders = (peer as any)._pc?.getSenders?.() || [];
+            const audioSender = senders.find((s: any) => s.track?.kind === 'audio');
+            if (audioSender) {
+              audioSender.replaceTrack(newTrack);
+            }
+          }
+        } catch (err) {
+          console.warn('[WebRTC] Failed to hot-swap track on peer:', err);
+        }
+      });
+    },
+    [getAudioContext]
+  );
+
   const cleanupPeer = useCallback((peerId: string) => {
-    // Clear ICE watchdog
     const iceTimer = iceTimersRef.current.get(peerId);
     if (iceTimer) {
       clearTimeout(iceTimer);
       iceTimersRef.current.delete(peerId);
     }
 
-    // 1. Destroy SimplePeer instance
     const peer = peersRef.current.get(peerId);
     if (peer) {
       try {
         peer.destroy();
-      } catch {
-        // Ignore destruction errors
-      }
+      } catch {}
       peersRef.current.delete(peerId);
     }
 
-    // 2. Remove audio element via audioManager
     audioManager.removeRemoteAudio(peerId);
 
-    // 3. Clean up analyser and speaking detection
     const analyserRecord = analyserRefs.current.get(peerId);
     if (analyserRecord) {
       cancelAnimationFrame(analyserRecord.animationFrameId);
       try {
         analyserRecord.source.disconnect();
         analyserRecord.analyser.disconnect();
-      } catch {
-        // Ignore disconnect errors
-      }
+      } catch {}
       analyserRefs.current.delete(peerId);
     }
 
-    // 4. Remove participant from state
     setParticipants((prev) => {
       if (!prev.has(peerId)) return prev;
       const next = new Map(prev);
@@ -235,31 +383,27 @@ export function useWebRTC({
     });
   }, []);
 
-  // Step 14: Create Peer with ICE restart fallback & close handling
   const createPeer = useCallback(
     (targetId: string, initiator: boolean, stream: MediaStream): SimplePeerInstance => {
-      // Clear existing peer for this targetId if any
       if (peersRef.current.has(targetId)) {
         peersRef.current.get(targetId)?.destroy();
         peersRef.current.delete(targetId);
       }
 
+      const outgoingStream = getOutgoingStream() || stream;
+
       const peer = new SimplePeer({
         initiator,
-        stream,
+        stream: outgoingStream,
         trickle: true,
         config: { iceServers: ICE_SERVERS },
       });
 
-      // 30s ICE connection fallback watchdog
       const iceTimer = setTimeout(() => {
         if (!peer.connected && !peer.destroyed) {
-          console.warn(`[WebRTC] ICE connection timeout with ${targetId}. Retrying peer connection...`);
           try {
             peer.destroy();
-          } catch {
-            // Ignore
-          }
+          } catch {}
           if (localStreamRef.current && socketRef.current?.connected) {
             createPeer(targetId, true, localStreamRef.current);
           }
@@ -278,7 +422,6 @@ export function useWebRTC({
       });
 
       peer.on('stream', (remoteStream: MediaStream) => {
-        // Clear ICE watchdog once stream begins
         const timer = iceTimersRef.current.get(targetId);
         if (timer) {
           clearTimeout(timer);
@@ -287,7 +430,6 @@ export function useWebRTC({
 
         audioManager.attachRemoteAudio(targetId, remoteStream);
 
-        // Update participant stream in state
         setParticipants((prev) => {
           const participant = prev.get(targetId);
           if (!participant) return prev;
@@ -300,7 +442,6 @@ export function useWebRTC({
       });
 
       peer.on('connect', () => {
-        console.log(`[WebRTC] Peer connection established with ${targetId}`);
         const timer = iceTimersRef.current.get(targetId);
         if (timer) {
           clearTimeout(timer);
@@ -314,17 +455,15 @@ export function useWebRTC({
       });
 
       peer.on('close', () => {
-        console.log(`[WebRTC] Peer connection closed with ${targetId}. Cleaning up.`);
         cleanupPeer(targetId);
       });
 
       peersRef.current.set(targetId, peer);
       return peer;
     },
-    [roomId, setupSpeakingDetection, cleanupPeer]
+    [roomId, setupSpeakingDetection, cleanupPeer, getOutgoingStream]
   );
 
-  // Toggle local mute
   const toggleMute = useCallback(() => {
     setIsMuted((prevMuted) => {
       const nextMuted = !prevMuted;
@@ -356,57 +495,54 @@ export function useWebRTC({
     });
   }, []);
 
-  // Leave room and reset
+  // Stable leaveRoom with empty dependencies (no geminiVoice dependency)
   const leaveRoom = useCallback(() => {
-    // Clear all ICE timers
     iceTimersRef.current.forEach((timer) => clearTimeout(timer));
     iceTimersRef.current.clear();
 
-    // Disconnect socket
     if (socketRef.current) {
       socketRef.current.disconnect();
       socketRef.current = null;
     }
 
-    // Destroy all peers
     peersRef.current.forEach((peer) => {
       try {
         peer.destroy();
-      } catch {
-        // Ignore
-      }
+      } catch {}
     });
     peersRef.current.clear();
 
-    // Cleanup audioManager
     audioManager.cleanup();
 
-    // Cancel all speaking detections
     analyserRefs.current.forEach((record) => {
       cancelAnimationFrame(record.animationFrameId);
       try {
         record.source.disconnect();
         record.analyser.disconnect();
-      } catch {
-        // Ignore
-      }
+      } catch {}
     });
     analyserRefs.current.clear();
 
-    // Stop local media tracks
+    if (processorNodeRef.current) {
+      try {
+        processorNodeRef.current.disconnect();
+      } catch {}
+      processorNodeRef.current = null;
+    }
+
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((track) => track.stop());
       localStreamRef.current = null;
     }
 
-    // Reset states
+    geminiVoiceRef.current?.close();
+
     setLocalStream(null);
     setParticipants(new Map());
     setIsConnected(false);
     setConnectionStatus('disconnected');
   }, []);
 
-  // Lifecycle useEffect with Auto-Reconnect & Resilience
   useEffect(() => {
     if (!roomId) return;
 
@@ -420,7 +556,6 @@ export function useWebRTC({
         return;
       }
 
-      // Automatically adapt to host IP if accessed via private LAN IP (e.g. 10.x, 192.168.x)
       let targetUrl = serverUrl;
       const isPrivateLanIp =
         typeof window !== 'undefined' &&
@@ -435,7 +570,6 @@ export function useWebRTC({
         targetUrl = `${window.location.protocol}//${window.location.hostname}:3001`;
       }
 
-      // Step 14: Socket.IO Auto-reconnect with exponential backoff
       const socket = io(targetUrl, {
         transports: ['websocket'],
         autoConnect: true,
@@ -452,45 +586,40 @@ export function useWebRTC({
         setIsConnected(true);
         setConnectionStatus('connected');
 
-        // Setup local participant
         const selfParticipant: Participant = {
           id: socket.id || 'local',
           name: userName,
           isMuted: isMutedRef.current,
           isSpeaking: false,
+          useAIVoice: useAIVoiceRef.current,
           stream,
         };
 
         setParticipants(new Map([[selfParticipant.id, selfParticipant]]));
         setupSpeakingDetection(selfParticipant.id, stream);
 
-        // Emit join-room
         socket.emit('join-room', {
           roomId,
           userData: {
             name: userName,
             isMuted: isMutedRef.current,
+            useAIVoice: useAIVoiceRef.current,
           },
         });
       };
 
       socket.on('connect', handleJoin);
 
-      // Reconnect handling: recreate peers upon regaining connection
       socket.io.on('reconnect_attempt', () => {
         if (isMounted) setConnectionStatus('reconnecting');
       });
 
       socket.io.on('reconnect', () => {
         if (!isMounted) return;
-        console.log('[Socket] Reconnected to server. Re-joining room...');
-        // Clear old peers
         peersRef.current.forEach((peer) => {
           try {
             peer.destroy();
-          } catch {
-            // Ignore
-          }
+          } catch {}
         });
         peersRef.current.clear();
         handleJoin();
@@ -500,7 +629,6 @@ export function useWebRTC({
         if (isMounted) setConnectionStatus('disconnected');
       });
 
-      // Handle room-joined
       socket.on(
         'room-joined',
         ({
@@ -528,13 +656,13 @@ export function useWebRTC({
                   name: p.name,
                   isMuted: p.isMuted,
                   isSpeaking: false,
+                  useAIVoice: p.useAIVoice,
                 });
               }
             });
             return next;
           });
 
-          // Create offers (initiator = true) to each existing peer
           existingParticipants.forEach((p) => {
             if (p.id !== socket.id && localStreamRef.current) {
               createPeer(p.id, true, localStreamRef.current);
@@ -543,7 +671,6 @@ export function useWebRTC({
         }
       );
 
-      // Handle user-joined
       socket.on(
         'user-joined',
         ({ participant }: { participant: Participant }) => {
@@ -556,13 +683,13 @@ export function useWebRTC({
               name: participant.name,
               isMuted: participant.isMuted,
               isSpeaking: false,
+              useAIVoice: participant.useAIVoice,
             });
             return next;
           });
         }
       );
 
-      // Handle signal relay
       socket.on(
         'signal',
         ({
@@ -577,7 +704,6 @@ export function useWebRTC({
 
           let peer = peersRef.current.get(from);
 
-          // If no peer exists yet, this is an incoming offer; create peer as receiver
           if (!peer && localStreamRef.current) {
             peer = createPeer(from, false, localStreamRef.current);
           }
@@ -588,7 +714,6 @@ export function useWebRTC({
         }
       );
 
-      // Handle mute-toggle
       socket.on(
         'mute-toggle',
         ({ userId, isMuted: remoteMuted }: { userId: string; isMuted: boolean }) => {
@@ -608,13 +733,56 @@ export function useWebRTC({
         }
       );
 
-      // Handle user-left
+      socket.on(
+        'ai-voice-toggled',
+        ({ userId, useAIVoice: remoteAIVoice }: { userId: string; useAIVoice: boolean }) => {
+          if (!isMounted) return;
+
+          setParticipants((prev) => {
+            const target = prev.get(userId);
+            if (!target) return prev;
+            const next = new Map(prev);
+            next.set(userId, {
+              ...target,
+              useAIVoice: remoteAIVoice,
+            });
+            return next;
+          });
+        }
+      );
+
+      socket.on(
+        'participant-updated',
+        ({
+          userId,
+          useAIVoice: remoteAIVoice,
+          participant,
+        }: {
+          userId: string;
+          useAIVoice: boolean;
+          participant: Partial<Participant>;
+        }) => {
+          if (!isMounted) return;
+
+          setParticipants((prev) => {
+            const target = prev.get(userId);
+            if (!target) return prev;
+            const next = new Map(prev);
+            next.set(userId, {
+              ...target,
+              ...participant,
+              useAIVoice: remoteAIVoice,
+            });
+            return next;
+          });
+        }
+      );
+
       socket.on('user-left', ({ userId }: { userId: string }) => {
         if (!isMounted) return;
         cleanupPeer(userId);
       });
 
-      // Handle disconnect
       socket.on('disconnect', (reason) => {
         if (!isMounted) return;
         setIsConnected(false);
@@ -656,6 +824,9 @@ export function useWebRTC({
     connectionStatus,
     toggleMute,
     leaveRoom,
+    useAIVoice: useAIVoiceState,
+    setAIVoice,
+    geminiVoice,
   };
 }
 

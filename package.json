@@ -3,8 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "server": "node server/index.js",
+    "dev:next": "next dev",
+    "dev:signaling": "node server/index.js",
+    "dev:gemini": "cd gemini-server && ./venv/bin/uvicorn app.main:app --reload --port 8000",
+    "dev": "concurrently \"npm run dev:next\" \"npm run dev:signaling\" \"npm run dev:gemini\"",
     "build": "next build",
     "start": "next start",
     "lint": "next lint"
@@ -26,6 +28,7 @@
     "@types/react": "^18",
     "@types/react-dom": "^18",
     "@types/simple-peer": "^9.11.9",
+    "concurrently": "^10.0.5",
     "eslint": "^8",
     "eslint-config-next": "14.2.35",
     "postcss": "^8",

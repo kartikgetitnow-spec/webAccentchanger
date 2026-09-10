@@ -7,6 +7,8 @@ export type ConnectionStatus =
   | 'reconnecting'
   | 'disconnected';
 
+export type GeminiStatus = 'idle' | 'connecting' | 'ready' | 'error';
+
 export interface CallState {
   roomId: string | null;
   participants: Participant[];
@@ -14,6 +16,10 @@ export interface CallState {
   isConnected: boolean;
   connectionStatus: ConnectionStatus;
   masterVolume: number;
+
+  // Gemini state slice
+  geminiStatus: GeminiStatus;
+  geminiError: string | null;
 
   // Actions
   setRoomId: (roomId: string | null) => void;
@@ -26,6 +32,8 @@ export interface CallState {
   setConnected: (isConnected: boolean) => void;
   setConnectionStatus: (status: ConnectionStatus) => void;
   setMasterVolume: (volume: number) => void;
+  setGeminiStatus: (status: GeminiStatus) => void;
+  setGeminiError: (error: string | null) => void;
   reset: () => void;
 }
 
@@ -36,6 +44,8 @@ const initialState = {
   isConnected: false,
   connectionStatus: 'disconnected' as ConnectionStatus,
   masterVolume: 100,
+  geminiStatus: 'idle' as GeminiStatus,
+  geminiError: null as string | null,
 };
 
 export const useCallStore = create<CallState>((set) => ({
@@ -76,6 +86,12 @@ export const useCallStore = create<CallState>((set) => ({
     ),
 
   setMasterVolume: (masterVolume) => set({ masterVolume }),
+
+  setGeminiStatus: (geminiStatus) =>
+    set((state) => (state.geminiStatus === geminiStatus ? state : { geminiStatus })),
+
+  setGeminiError: (geminiError) =>
+    set((state) => (state.geminiError === geminiError ? state : { geminiError })),
 
   reset: () => set(initialState),
 }));
