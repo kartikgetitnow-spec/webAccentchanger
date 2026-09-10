@@ -1,101 +1,195 @@
-import Image from "next/image";
+'use client';
+
+import { useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { motion } from 'framer-motion';
+import { Mic, Users, ArrowRight, Sparkles, Volume2, Shield } from 'lucide-react';
 
 export default function Home() {
-  return (
-    <div className="grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 font-[family-name:var(--font-geist-sans)]">
-      <main className="flex flex-col gap-8 row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="https://nextjs.org/icons/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="list-inside list-decimal text-sm text-center sm:text-left font-[family-name:var(--font-geist-mono)]">
-          <li className="mb-2">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] px-1 py-0.5 rounded font-semibold">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li>Save and see your changes instantly.</li>
-        </ol>
+  const router = useRouter();
+  const [name, setName] = useState('');
+  const [roomId, setRoomId] = useState('');
+  const [nameError, setNameError] = useState('');
+  const [roomError, setRoomError] = useState('');
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="https://nextjs.org/icons/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:min-w-44"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+  const generateRandomRoom = () => {
+    const chars = 'abcdefghjkmnpqrstuvwxyz23456789';
+    let code = '';
+    for (let i = 0; i < 6; i++) {
+      code += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    const generated = `room-${code}`;
+    setRoomId(generated);
+    setRoomError('');
+  };
+
+  const validate = (): boolean => {
+    let isValid = true;
+
+    if (!name.trim()) {
+      setNameError('Please enter your display name');
+      isValid = false;
+    } else {
+      setNameError('');
+    }
+
+    const trimmedRoom = roomId.trim();
+    if (!trimmedRoom) {
+      setRoomError('Please enter or generate a room ID');
+      isValid = false;
+    } else if (!/^[a-zA-Z0-9_-]+$/.test(trimmedRoom)) {
+      setRoomError('Room ID can only contain letters, numbers, and dashes');
+      isValid = false;
+    } else {
+      setRoomError('');
+    }
+
+    return isValid;
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!validate()) return;
+
+    const trimmedName = encodeURIComponent(name.trim());
+    const trimmedRoom = encodeURIComponent(roomId.trim());
+    router.push(`/room/${trimmedRoom}?name=${trimmedName}`);
+  };
+
+  return (
+    <main className="min-h-screen w-full bg-zinc-950 text-slate-100 flex flex-col justify-center items-center px-4 py-12 relative overflow-hidden selection:bg-indigo-500 selection:text-white">
+      {/* Background ambient lighting */}
+      <div className="absolute top-1/4 -left-32 w-96 h-96 bg-indigo-600/15 rounded-full blur-3xl pointer-events-none" />
+      <div className="absolute bottom-1/4 -right-32 w-96 h-96 bg-emerald-600/15 rounded-full blur-3xl pointer-events-none" />
+
+      {/* Animated Card */}
+      <motion.div
+        initial={{ opacity: 0, y: 20, scale: 0.96 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        transition={{ duration: 0.4, ease: 'easeOut' }}
+        className="w-full max-w-md bg-zinc-900/60 backdrop-blur-2xl border border-white/10 rounded-2xl shadow-2xl p-8 relative z-10"
+      >
+        {/* Brand header */}
+        <div className="flex flex-col items-center text-center mb-8">
+          <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-indigo-500 via-sky-400 to-emerald-400 flex items-center justify-center shadow-lg shadow-indigo-500/25 mb-4 ring-1 ring-white/20">
+            <Mic className="w-8 h-8 text-white" />
+          </div>
+          <h1 className="text-3xl font-black tracking-tight bg-gradient-to-r from-white via-zinc-200 to-zinc-400 bg-clip-text text-transparent">
+            VoiceLink
+          </h1>
+          <p className="text-sm text-zinc-400 mt-2">
+            Real-time peer-to-peer WebRTC voice calling
+          </p>
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-6 flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="https://nextjs.org/icons/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
-    </div>
+
+        {/* Form */}
+        <form onSubmit={handleSubmit} className="space-y-5" noValidate>
+          {/* Display Name input */}
+          <div>
+            <label
+              htmlFor="display-name"
+              className="block text-xs font-bold uppercase tracking-wider text-zinc-400 mb-2"
+            >
+              Your Name
+            </label>
+            <div className="relative">
+              <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-zinc-500">
+                <Users className="w-4 h-4" />
+              </div>
+              <input
+                id="display-name"
+                type="text"
+                value={name}
+                onChange={(e) => {
+                  setName(e.target.value);
+                  if (nameError) setNameError('');
+                }}
+                placeholder="e.g. Sarah Connor"
+                className={`w-full bg-zinc-950/70 border ${
+                  nameError
+                    ? 'border-red-500/80 focus-visible:ring-red-500'
+                    : 'border-white/10 focus-visible:border-indigo-500 focus-visible:ring-indigo-500'
+                } rounded-xl pl-10 pr-4 py-3 text-zinc-100 placeholder-zinc-500 text-sm focus-visible:outline-none focus-visible:ring-2 transition shadow-inner`}
+                aria-invalid={Boolean(nameError)}
+                aria-describedby={nameError ? 'name-error' : undefined}
+              />
+            </div>
+            {nameError && (
+              <p id="name-error" className="text-xs text-red-400 mt-1.5 font-medium">
+                {nameError}
+              </p>
+            )}
+          </div>
+
+          {/* Room ID input */}
+          <div>
+            <div className="flex justify-between items-center mb-2">
+              <label
+                htmlFor="room-id"
+                className="block text-xs font-bold uppercase tracking-wider text-zinc-400"
+              >
+                Room ID
+              </label>
+              <button
+                type="button"
+                onClick={generateRandomRoom}
+                className="text-xs text-indigo-400 hover:text-indigo-300 font-medium flex items-center gap-1 transition focus-visible:outline-none focus-visible:underline"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                Generate random
+              </button>
+            </div>
+            <div className="relative">
+              <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-zinc-500">
+                <Mic className="w-4 h-4" />
+              </div>
+              <input
+                id="room-id"
+                type="text"
+                value={roomId}
+                onChange={(e) => {
+                  setRoomId(e.target.value);
+                  if (roomError) setRoomError('');
+                }}
+                placeholder="e.g. dev-sync-room"
+                className={`w-full bg-zinc-950/70 border ${
+                  roomError
+                    ? 'border-red-500/80 focus-visible:ring-red-500'
+                    : 'border-white/10 focus-visible:border-indigo-500 focus-visible:ring-indigo-500'
+                } rounded-xl pl-10 pr-4 py-3 text-zinc-100 placeholder-zinc-500 text-sm focus-visible:outline-none focus-visible:ring-2 transition shadow-inner`}
+                aria-invalid={Boolean(roomError)}
+                aria-describedby={roomError ? 'room-error' : undefined}
+              />
+            </div>
+            {roomError && (
+              <p id="room-error" className="text-xs text-red-400 mt-1.5 font-medium">
+                {roomError}
+              </p>
+            )}
+          </div>
+
+          {/* Submit button */}
+          <button
+            type="submit"
+            className="w-full mt-3 bg-gradient-to-r from-indigo-500 via-sky-500 to-emerald-500 hover:from-indigo-600 hover:to-emerald-600 text-white font-semibold py-3.5 px-4 rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-indigo-500/25 transition duration-200 group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+          >
+            <span>Join Room</span>
+            <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+          </button>
+        </form>
+
+        {/* Feature badges */}
+        <div className="mt-8 pt-6 border-t border-white/10 grid grid-cols-2 gap-3 text-xs text-zinc-400">
+          <div className="flex items-center gap-2">
+            <Volume2 className="w-4 h-4 text-emerald-400" />
+            <span>Active Speaker Ring</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <Shield className="w-4 h-4 text-indigo-400" />
+            <span>P2P WebRTC Audio</span>
+          </div>
+        </div>
+      </motion.div>
+    </main>
   );
 }

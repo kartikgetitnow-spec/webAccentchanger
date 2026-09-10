@@ -1,36 +1,116 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# VoiceLink (webAccentchanger) 🎙️⚡
 
-## Getting Started
+> A professional, real-time WebRTC voice calling web application built with **Next.js 14 (App Router + TypeScript + Tailwind CSS)**, **SimplePeer**, **Socket.IO signaling**, and **Zustand**.
 
-First, run the development server:
+---
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+## 🌟 Key Features
+
+- **P2P Encrypted Audio**: Low-latency mesh audio streaming via WebRTC (`simple-peer`).
+- **Real-time Active Speaker Detection**: Time-domain RMS analysis using Web Audio API (`AnalyserNode`) with hysteresis (>25 enter, <15 exit) and smooth animated gradient rings.
+- **Glassmorphism Dark UI**: Built with Tailwind CSS and Framer Motion transitions (`zinc-950` dark aesthetic).
+- **Controls & Shortcuts**:
+  - Big circular mute button (<kbd>M</kbd>) with red glow indicator.
+  - Instant leave button (<kbd>L</kbd>) with clean resource teardown.
+  - Master playback volume control slider.
+  - One-click invite link copying with sonner toast notifications.
+- **Production Signaling Server**:
+  - Node.js + Socket.IO with CORS, rate limiting, and 60-second empty room garbage collection.
+  - Structured logging with `pino`.
+  - Configurable STUN/TURN server traversal for NAT traversal.
+  - Graceful shutdown handling (`SIGTERM`/`SIGINT`).
+- **Docker & Compose Ready**: Multi-stage Docker builds for both the Next.js frontend and the signaling server.
+
+---
+
+## 🏗️ Architecture
+
+```
+                                  ┌───────────────────────────────┐
+                                  │   Socket.IO Signaling Server  │
+                                  │         (Port 3001)           │
+                                  └───────────────▲───────────────┘
+                                                  │
+                                  SDP Offers / Answers / ICE
+                                                  │
+                                                  ▼
+   ┌────────────────────────┐         Direct P2P Audio         ┌────────────────────────┐
+   │    User A (Browser)    │ ◄──────────────────────────────► │    User B (Browser)    │
+   │  Next.js 14 (Port 3000)│         (WebRTC Mesh)            │  Next.js 14 (Port 3000)│
+   └────────────────────────┘                                  └────────────────────────┘
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+---
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## 🚀 Quick Start (Local Development)
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+### 1. Clone and Install Dependencies
 
-## Learn More
+```bash
+# Clone the repository
+git clone https://github.com/kartikgetitnow-spec/webAccentchanger.git
+cd webAccentchanger
 
-To learn more about Next.js, take a look at the following resources:
+# Install web app dependencies
+npm install
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+# Install signaling server dependencies
+cd server && npm install && cd ..
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+### 2. Configure Environment
 
-## Deploy on Vercel
+Frontend (`.env.local`):
+```bash
+NEXT_PUBLIC_SIGNALING_URL=http://localhost:3001
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Signaling server (`server/.env`):
+```bash
+PORT=3001
+CLIENT_URL=http://localhost:3000
+LOG_LEVEL=info
+MAX_PARTICIPANTS=10
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+# Optional TURN server (for cellular / strict NAT traversal):
+TURN_URL=
+TURN_USERNAME=
+TURN_CREDENTIAL=
+```
+
+### 3. Run Development Servers
+
+In terminal 1 (Signaling Server):
+```bash
+npm run server
+```
+
+In terminal 2 (Next.js Web App):
+```bash
+npm run dev
+```
+
+Open [http://localhost:3000](http://localhost:3000) in two browser tabs or devices on the same network to test voice calling!
+
+---
+
+## 🐳 Docker Deployment
+
+Run both the Next.js app and the signaling server together with Docker Compose:
+
+```bash
+docker compose up --build
+```
+
+---
+
+## 🌐 Production Deployment
+
+- **Next.js App**: Deploy to [Vercel](https://vercel.com). Set `NEXT_PUBLIC_SIGNALING_URL` to your production signaling server URL.
+- **Signaling Server**: Deploy to [Railway](https://railway.app), [Render](https://render.com), or [Fly.io](https://fly.io) from the `/server` folder.
+
+---
+
+## 📝 License
+
+MIT
