@@ -40,7 +40,7 @@ class Settings(BaseSettings):
 
     # Gemini Multimodal Live API Settings
     GEMINI_MODEL: str = Field(
-        default="gemini-2.0-flash-live-001",
+        default="models/gemini-2.5-flash-native-audio-latest",
         description="Gemini model identifier for Live API sessions"
     )
     GEMINI_VOICE: str = Field(
@@ -50,7 +50,7 @@ class Settings(BaseSettings):
 
     # Base WebSocket URL for Gemini Live
     GEMINI_LIVE_WS_URL: str = Field(
-        default="wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent",
+        default="wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained",
         description="Base WebSocket URL for Gemini Multimodal Live API"
     )
     MAX_REQUESTS_PER_MINUTE: int = Field(

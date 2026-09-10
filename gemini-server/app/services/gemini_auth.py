@@ -176,7 +176,10 @@ def create_ephemeral_token(
             detail="Gemini service did not return a valid ephemeral token.",
         )
 
-    full_ws_url = f"{settings.GEMINI_LIVE_WS_URL}?key={raw_token}"
+    if raw_token.startswith("auth_tokens/"):
+        full_ws_url = f"wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained?access_token={raw_token}"
+    else:
+        full_ws_url = f"wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key={raw_token}"
 
     logger.info(f"Ephemeral token successfully created for user_id='{user_id}' (expires_at {expires_at_unix})")
 

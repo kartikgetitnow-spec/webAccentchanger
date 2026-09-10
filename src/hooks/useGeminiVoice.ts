@@ -29,6 +29,16 @@ interface TokenApiResponse {
   ws_url: string;
 }
 
+function arrayBufferToBase64(buffer: ArrayBuffer | ArrayBufferLike): string {
+  let binary = '';
+  const bytes = new Uint8Array(buffer);
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
 export function useGeminiVoice({
   roomId,
   userId,
@@ -46,6 +56,7 @@ export function useGeminiVoice({
   const audioCallbacksRef = useRef<Set<(pcm: ArrayBuffer) => void>>(new Set());
   const refreshTimerRef = useRef<NodeJS.Timeout | null>(null);
   const isMountedRef = useRef<boolean>(true);
+  const isDirectGeminiRef = useRef<boolean>(true);
 
   // Helper to fetch ephemeral token from server
   const fetchToken = useCallback(async (): Promise<TokenApiResponse | null> => {
@@ -115,7 +126,24 @@ export function useGeminiVoice({
   const sendAudio = useCallback((pcmChunk: ArrayBuffer | ArrayBufferLike) => {
     const activeWs = wsRef.current;
     if (activeWs && activeWs.readyState === WebSocket.OPEN) {
-      activeWs.send(pcmChunk);
+      if (isDirectGeminiRef.current) {
+        // Direct Gemini Live WebSocket: send base64 PCM in realtime_input frame
+        const base64Audio = arrayBufferToBase64(pcmChunk);
+        const msg = JSON.stringify({
+          realtime_input: {
+            media_chunks: [
+              {
+                mime_type: 'audio/pcm;rate=16000',
+                data: base64Audio,
+              },
+            ],
+          },
+        });
+        activeWs.send(msg);
+      } else {
+        // FastAPI bridge: accepts binary PCM ArrayBuffer directly
+        activeWs.send(pcmChunk);
+      }
       setIsStreaming((prev) => (prev ? prev : true));
     } else {
       console.warn('[useGeminiVoice] Cannot send audio: WebSocket is not open.');
@@ -158,15 +186,28 @@ export function useGeminiVoice({
         }
       }, refreshDelaySec * 1000);
 
-      // Open WebSocket to Gemini bridge (using wss:// over HTTPS)
-      let baseUrl = process.env.NEXT_PUBLIC_GEMINI_SERVER_URL || 'https://65-2-161-214.sslip.io';
-      if (baseUrl.includes('65.2.161.214') && !baseUrl.includes('sslip.io')) {
-        baseUrl = 'https://65-2-161-214.sslip.io';
+      // Direct client-to-Gemini Live API over secure WSS using ephemeral token
+      let wsEndpoint = tokenData.ws_url;
+      if (wsEndpoint && wsEndpoint.includes('key=auth_tokens/')) {
+        wsEndpoint = wsEndpoint
+          .replace('BidiGenerateContent?', 'BidiGenerateContentConstrained?')
+          .replace('key=auth_tokens/', 'access_token=auth_tokens/');
       }
-      let wsEndpoint = baseUrl.replace(/^http(s)?:\/\//, (_, s) => (s ? 'wss://' : 'ws://')).replace(/\/+$/, '') + '/ws/gemini';
-      if (typeof window !== 'undefined' && window.location.protocol === 'https:' && wsEndpoint.startsWith('ws://')) {
-        wsEndpoint = wsEndpoint.replace('ws://', 'wss://');
+
+      // If ws_url is not set, fall back to remote FastAPI bridge
+      if (!wsEndpoint) {
+        let baseUrl = process.env.NEXT_PUBLIC_GEMINI_SERVER_URL || 'https://65-2-161-214.sslip.io';
+        if (baseUrl.includes('65.2.161.214') && !baseUrl.includes('sslip.io')) {
+          baseUrl = 'https://65-2-161-214.sslip.io';
+        }
+        wsEndpoint = baseUrl.replace(/^http(s)?:\/\//, (_, s) => (s ? 'wss://' : 'ws://')).replace(/\/+$/, '') + '/ws/gemini';
+        if (typeof window !== 'undefined' && window.location.protocol === 'https:' && wsEndpoint.startsWith('ws://')) {
+          wsEndpoint = wsEndpoint.replace('ws://', 'wss://');
+        }
       }
+
+      const isDirect = wsEndpoint.includes('generativelanguage.googleapis.com');
+      isDirectGeminiRef.current = isDirect;
 
       try {
         const socket = new WebSocket(wsEndpoint);
@@ -179,20 +220,47 @@ export function useGeminiVoice({
           setIsConnected(true);
           setError(null);
 
-          // Initial handshake frame
-          socket.send(
-            JSON.stringify({
-              token: tokenData.token,
-              voice: voice || tokenData.voice || 'Puck',
-              system_prompt: systemPrompt || 'You are an AI voice transformer. Speak in Puck voice.',
-            })
-          );
+          if (isDirect) {
+            // Direct Gemini Live setup frame
+            const setupMsg = {
+              setup: {
+                model: 'models/gemini-2.5-flash-native-audio-latest',
+                generation_config: {
+                  response_modalities: ['AUDIO'],
+                  speech_config: {
+                    voice_config: {
+                      prebuilt_voice_config: {
+                        voice_name: voice || 'Puck',
+                      },
+                    },
+                  },
+                },
+                system_instruction: {
+                  parts: [
+                    {
+                      text: systemPrompt || 'You are an AI voice transformer. Speak in Puck voice.',
+                    },
+                  ],
+                },
+              },
+            };
+            socket.send(JSON.stringify(setupMsg));
+          } else {
+            // FastAPI bridge handshake frame
+            socket.send(
+              JSON.stringify({
+                token: tokenData.token,
+                voice: voice || tokenData.voice || 'Puck',
+                system_prompt: systemPrompt || 'You are an AI voice transformer. Speak in Puck voice.',
+              })
+            );
+          }
         };
 
         socket.onmessage = async (event) => {
           if (!active) return;
 
-          // Raw PCM ArrayBuffer
+          // Raw PCM ArrayBuffer (from bridge)
           if (event.data instanceof ArrayBuffer) {
             audioCallbacksRef.current.forEach((cb) => cb(event.data));
           } else if (event.data instanceof Blob) {
@@ -201,8 +269,32 @@ export function useGeminiVoice({
           } else if (typeof event.data === 'string') {
             try {
               const msg = JSON.parse(event.data);
-              if (msg.type === 'audio' && msg.data) {
-                // Decode base64 audio
+
+              // 1. Direct Gemini setup complete
+              if (msg.setupComplete) {
+                setIsConnected(true);
+                setError(null);
+              }
+
+              // 2. Direct Gemini audio stream chunks
+              if (msg.serverContent?.modelTurn?.parts) {
+                for (const part of msg.serverContent.modelTurn.parts) {
+                  if (part.inlineData?.data) {
+                    const binaryStr = atob(part.inlineData.data);
+                    const bytes = new Uint8Array(binaryStr.length);
+                    for (let i = 0; i < binaryStr.length; i++) {
+                      bytes[i] = binaryStr.charCodeAt(i);
+                    }
+                    audioCallbacksRef.current.forEach((cb) => cb(bytes.buffer));
+                  }
+                }
+              }
+
+              // 3. FastAPI bridge messages
+              if (msg.type === 'ready') {
+                setIsConnected(true);
+                setError(null);
+              } else if (msg.type === 'audio' && msg.data) {
                 const binaryStr = atob(msg.data);
                 const bytes = new Uint8Array(binaryStr.length);
                 for (let i = 0; i < binaryStr.length; i++) {

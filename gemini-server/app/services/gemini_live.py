@@ -86,8 +86,18 @@ async def bridge_websocket(client_ws: WebSocket) -> None:
             return
 
         # Step 3: Connect to Gemini Live WebSocket API
-        gemini_url = f"{settings.GEMINI_LIVE_WS_URL}?key={token}"
-        logger.info(f"Opening connection to Gemini Live API with voice='{voice}', model='{model}'...")
+        if token.startswith("auth_tokens/"):
+            gemini_url = f"wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained?access_token={token}"
+        else:
+            gemini_url = f"wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key={token}"
+
+        target_model = model or settings.GEMINI_MODEL
+        if not target_model.startswith("models/"):
+            target_model = f"models/{target_model}"
+        if "gemini-2.0-flash-live-001" in target_model:
+            target_model = "models/gemini-2.5-flash-native-audio-latest"
+
+        logger.info(f"Opening connection to Gemini Live API with voice='{voice}', model='{target_model}'...")
 
         gemini_ws = await websockets.connect(
             gemini_url,
@@ -100,7 +110,7 @@ async def bridge_websocket(client_ws: WebSocket) -> None:
         # Step 4: Send initial Gemini setup message
         setup_payload = {
             "setup": {
-                "model": model,
+                "model": target_model,
                 "generation_config": {
                     "response_modalities": ["AUDIO"],
                     "speech_config": {
