@@ -142,7 +142,14 @@ export function useGeminiVoice({
         activeWs.send(msg);
       } else {
         // FastAPI bridge: accepts binary PCM ArrayBuffer directly
-        activeWs.send(pcmChunk);
+        if (pcmChunk instanceof ArrayBuffer) {
+          activeWs.send(pcmChunk);
+        } else if (ArrayBuffer.isView(pcmChunk)) {
+          const view = pcmChunk as ArrayBufferView;
+          activeWs.send(view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength));
+        } else {
+          activeWs.send(pcmChunk);
+        }
       }
       setIsStreaming((prev) => (prev ? prev : true));
     } else {
@@ -186,28 +193,36 @@ export function useGeminiVoice({
         }
       }, refreshDelaySec * 1000);
 
-      // Direct client-to-Gemini Live API over secure WSS using ephemeral token
-      let wsEndpoint = tokenData.ws_url;
-      if (wsEndpoint && wsEndpoint.includes('key=auth_tokens/')) {
-        wsEndpoint = wsEndpoint
-          .replace('BidiGenerateContent?', 'BidiGenerateContentConstrained?')
-          .replace('key=auth_tokens/', 'access_token=auth_tokens/');
+      // Determine WebSocket endpoint
+      // Default: Connect to the Python server bridge (/ws/gemini) over secure WSS
+      let baseUrl = process.env.NEXT_PUBLIC_GEMINI_SERVER_URL || 'https://65-2-161-214.sslip.io';
+      if (baseUrl.includes('65.2.161.214') && !baseUrl.includes('sslip.io')) {
+        baseUrl = 'https://65-2-161-214.sslip.io';
       }
 
-      // If ws_url is not set, fall back to remote FastAPI bridge
-      if (!wsEndpoint) {
-        let baseUrl = process.env.NEXT_PUBLIC_GEMINI_SERVER_URL || 'https://65-2-161-214.sslip.io';
-        if (baseUrl.includes('65.2.161.214') && !baseUrl.includes('sslip.io')) {
-          baseUrl = 'https://65-2-161-214.sslip.io';
-        }
-        wsEndpoint = baseUrl.replace(/^http(s)?:\/\//, (_, s) => (s ? 'wss://' : 'ws://')).replace(/\/+$/, '') + '/ws/gemini';
-        if (typeof window !== 'undefined' && window.location.protocol === 'https:' && wsEndpoint.startsWith('ws://')) {
-          wsEndpoint = wsEndpoint.replace('ws://', 'wss://');
+      // Format as secure wss:// URL to the Python server bridge (/ws/gemini)
+      let wsEndpoint = baseUrl
+        .replace(/^http:/i, 'ws:')
+        .replace(/^https:/i, 'wss:')
+        .replace(/\/+$/, '') + '/ws/gemini';
+
+      if (typeof window !== 'undefined' && window.location.protocol === 'https:' && wsEndpoint.startsWith('ws://')) {
+        wsEndpoint = wsEndpoint.replace('ws://', 'wss://');
+      }
+
+      // If user explicitly configured direct Gemini connection
+      if (process.env.NEXT_PUBLIC_GEMINI_DIRECT === 'true' && tokenData.ws_url) {
+        wsEndpoint = tokenData.ws_url;
+        if (wsEndpoint.includes('key=auth_tokens/')) {
+          wsEndpoint = wsEndpoint
+            .replace('BidiGenerateContent?', 'BidiGenerateContentConstrained?')
+            .replace('key=auth_tokens/', 'access_token=auth_tokens/');
         }
       }
 
       const isDirect = wsEndpoint.includes('generativelanguage.googleapis.com');
       isDirectGeminiRef.current = isDirect;
+      console.log(`[useGeminiVoice] Connecting via ${wsEndpoint.startsWith('wss://') ? 'secure WSS' : 'WS'} to: ${wsEndpoint}`);
 
       try {
         const socket = new WebSocket(wsEndpoint);
@@ -252,6 +267,7 @@ export function useGeminiVoice({
                 token: tokenData.token,
                 voice: voice || tokenData.voice || 'Puck',
                 system_prompt: systemPrompt || 'You are an AI voice transformer. Speak in Puck voice.',
+                model: tokenData.model || 'models/gemini-2.5-flash-native-audio-latest',
               })
             );
           }

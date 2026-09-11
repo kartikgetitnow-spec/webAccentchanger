@@ -147,6 +147,8 @@ async def bridge_websocket(client_ws: WebSocket) -> None:
         # Step 5: Define bi-directional streaming tasks
         async def client_to_gemini():
             """Forward audio and control frames from Client to Gemini Live."""
+            in_frame_count = 0
+            total_in_bytes = 0
             try:
                 while True:
                     frame = await client_ws.receive()
@@ -156,6 +158,13 @@ async def bridge_websocket(client_ws: WebSocket) -> None:
                     # Binary frame: Raw PCM 16kHz Mono Int16 Audio
                     if "bytes" in frame and frame["bytes"]:
                         raw_bytes = frame["bytes"]
+                        in_frame_count += 1
+                        total_in_bytes += len(raw_bytes)
+                        if in_frame_count == 1 or in_frame_count % 50 == 0:
+                            logger.info(
+                                f"[Bridge] Client audio frame #{in_frame_count}: {len(raw_bytes)} bytes received (total: {total_in_bytes} bytes). Forwarding to Gemini."
+                            )
+
                         b64_audio = base64.b64encode(raw_bytes).decode("utf-8")
                         gemini_msg = {
                             "realtime_input": {
@@ -224,6 +233,7 @@ async def bridge_websocket(client_ws: WebSocket) -> None:
 
         async def gemini_to_client():
             """Forward Gemini Live audio and text turns to Client."""
+            out_frame_count = 0
             try:
                 async for raw_response in gemini_ws:
                     try:
@@ -245,6 +255,11 @@ async def bridge_websocket(client_ws: WebSocket) -> None:
                                 # Forward audio chunk
                                 mime_type = inline_data.get("mimeType", "audio/pcm;rate=24000")
                                 b64_data = inline_data.get("data", "")
+                                out_frame_count += 1
+                                if out_frame_count == 1 or out_frame_count % 50 == 0:
+                                    logger.info(
+                                        f"[Bridge] Gemini audio response #{out_frame_count}: {len(b64_data)} b64 chars. Forwarding to Client."
+                                    )
                                 await client_ws.send_json({
                                     "type": "audio",
                                     "mime_type": mime_type,

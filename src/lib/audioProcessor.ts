@@ -73,24 +73,31 @@ export async function createAudioWorkletNode(
 ): Promise<AudioNode> {
   if (typeof AudioWorkletNode !== 'undefined' && context.audioWorklet) {
     try {
-      const processorCode = `
+      // 1. First attempt: Load static worklet file from public directory (most reliable across iOS Safari and Android)
+      try {
+        await context.audioWorklet.addModule('/gemini-processor.worklet.js');
+      } catch (staticErr) {
+        console.warn('[audioProcessor] Static worklet file load failed, attempting Blob URL fallback:', staticErr);
+        // Fallback: Inline dynamic blob module
+        const processorCode = `
 class GeminiVoiceCaptureProcessor extends AudioWorkletProcessor {
   process(inputs) {
     const input = inputs[0];
     if (input && input[0] && input[0].length > 0) {
-      this.port.postMessage(input[0]);
+      this.port.postMessage(new Float32Array(input[0]));
     }
     return true;
   }
 }
 registerProcessor('gemini-voice-capture', GeminiVoiceCaptureProcessor);
 `;
-      const blob = new Blob([processorCode], { type: 'application/javascript' });
-      const moduleUrl = URL.createObjectURL(blob);
-      try {
-        await context.audioWorklet.addModule(moduleUrl);
-      } finally {
-        URL.revokeObjectURL(moduleUrl);
+        const blob = new Blob([processorCode], { type: 'application/javascript' });
+        const moduleUrl = URL.createObjectURL(blob);
+        try {
+          await context.audioWorklet.addModule(moduleUrl);
+        } finally {
+          URL.revokeObjectURL(moduleUrl);
+        }
       }
 
       const workletNode = new AudioWorkletNode(context, 'gemini-voice-capture');
@@ -120,11 +127,20 @@ registerProcessor('gemini-voice-capture', GeminiVoiceCaptureProcessor);
 
   // Fallback to ScriptProcessorNode for environments without AudioWorklet support
   const processor = context.createScriptProcessor(bufferSize, 1, 1);
+  const sampleAccumulator: number[] = [];
+
   processor.onaudioprocess = (event: AudioProcessingEvent) => {
     const inputBuffer = event.inputBuffer.getChannelData(0);
     const resampled = resampleAudio(inputBuffer, context.sampleRate, 16000);
-    const pcm16 = convertFloat32ToInt16(resampled);
-    onAudioChunk(pcm16);
+    for (let i = 0; i < resampled.length; i++) {
+      sampleAccumulator.push(resampled[i]);
+    }
+
+    while (sampleAccumulator.length >= 1024) {
+      const slice = new Float32Array(sampleAccumulator.splice(0, 1024));
+      const pcm16 = convertFloat32ToInt16(slice);
+      onAudioChunk(pcm16);
+    }
   };
 
   return processor;

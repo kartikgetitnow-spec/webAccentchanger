@@ -277,7 +277,8 @@ export function useWebRTC({
       localStreamRef.current = stream;
       setLocalStream(stream);
 
-      const ctx = getAudioContext();
+      const ctx = await audioManager.ensureAudioContextResumed();
+      audioContextRef.current = ctx;
       if (!aiDestinationRef.current) {
         aiDestinationRef.current = ctx.createMediaStreamDestination();
       }
@@ -287,14 +288,18 @@ export function useWebRTC({
         micSourceNodeRef.current = micSource;
 
         const processor = await createAudioWorkletNode(ctx, (pcm16) => {
-          if (useAIVoiceRef.current && !isMutedRef.current && geminiVoiceRef.current?.isConnected) {
-            geminiVoiceRef.current.sendAudio(pcm16.buffer as ArrayBuffer);
+          const gv = geminiVoiceRef.current;
+          const isWsReady = gv?.ws && gv.ws.readyState === WebSocket.OPEN;
+          if (useAIVoiceRef.current && !isMutedRef.current && (gv?.isConnected || isWsReady)) {
+            gv.sendAudio(pcm16.buffer as ArrayBuffer);
           }
         });
         processorNodeRef.current = processor;
 
         const silentGain = ctx.createGain();
-        silentGain.gain.value = 0;
+        // In WebKit (iOS Safari), gain value of 0 pauses audio processing nodes.
+        // 0.00001 (-100 dB) is completely inaudible but keeps the WebKit audio engine running.
+        silentGain.gain.value = 0.00001;
         silentGainRef.current = silentGain;
 
         micSource.connect(processor);
@@ -307,12 +312,15 @@ export function useWebRTC({
       console.error('Failed to get user media (microphone access):', err);
       return null;
     }
-  }, [getAudioContext]);
+  }, []);
 
   const setAIVoice = useCallback(
     (enabled: boolean) => {
       setUseAIVoiceState(enabled);
       useAIVoiceRef.current = enabled;
+
+      // Ensure AudioContext is actively running (critical for iOS Safari and mobile Chrome)
+      audioManager.ensureAudioContextResumed().catch(() => {});
 
       if (socketRef.current?.connected) {
         socketRef.current.emit('ai-voice-toggle', { useAIVoice: enabled });
@@ -477,6 +485,7 @@ export function useWebRTC({
   );
 
   const toggleMute = useCallback(() => {
+    audioManager.ensureAudioContextResumed().catch(() => {});
     setIsMuted((prevMuted) => {
       const nextMuted = !prevMuted;
 

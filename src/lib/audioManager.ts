@@ -54,15 +54,26 @@ class AudioManager {
           audio.play().catch(() => {});
         }
       });
-
-      window.removeEventListener('click', unlockAudio);
-      window.removeEventListener('keydown', unlockAudio);
-      window.removeEventListener('touchstart', unlockAudio);
     };
 
-    window.addEventListener('click', unlockAudio, { once: true });
-    window.addEventListener('keydown', unlockAudio, { once: true });
-    window.addEventListener('touchstart', unlockAudio, { once: true });
+    // Attach passive listeners for touch and click to keep AudioContext active on mobile devices
+    window.addEventListener('click', unlockAudio, { passive: true });
+    window.addEventListener('keydown', unlockAudio, { passive: true });
+    window.addEventListener('touchstart', unlockAudio, { passive: true });
+    window.addEventListener('touchend', unlockAudio, { passive: true });
+  }
+
+  // Ensure AudioContext is instantiated and actively resumed (especially after user interaction on iOS/Android)
+  public async ensureAudioContextResumed(): Promise<AudioContext> {
+    const ctx = this.getAudioContext();
+    if (ctx && ctx.state === 'suspended') {
+      try {
+        await ctx.resume();
+      } catch (err) {
+        console.warn('[AudioManager] Failed to resume AudioContext:', err);
+      }
+    }
+    return ctx;
   }
 
   // Obtain or resume AudioContext
