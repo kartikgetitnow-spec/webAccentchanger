@@ -9,7 +9,7 @@ export interface VoiceState {
 
 export const useVoiceStore = create<VoiceState>((set) => ({
   useAIVoice: false,
-  selectedVoice: 'Puck',
+  selectedVoice: 'USA',
   setUseAIVoice: (useAIVoice) => set({ useAIVoice }),
   setSelectedVoice: (selectedVoice) => set({ selectedVoice }),
 }));

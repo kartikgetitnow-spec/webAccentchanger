@@ -39,10 +39,23 @@ function arrayBufferToBase64(buffer: ArrayBuffer | ArrayBufferLike): string {
   return btoa(binary);
 }
 
+const ACCENT_CONFIG: Record<string, { nativeVoice: string; systemPrompt: string }> = {
+  USA: {
+    nativeVoice: 'Puck',
+    systemPrompt:
+      "You are a real-time AI voice accent converter. Immediately repeat and restate the user's speech in an authentic, natural American English (USA accent) while preserving their original words, meaning, emotion, and cadence.",
+  },
+  UK: {
+    nativeVoice: 'Charon',
+    systemPrompt:
+      "You are a real-time AI voice accent converter. Immediately repeat and restate the user's speech in an authentic, natural British English (UK accent) while preserving their original words, meaning, emotion, and cadence.",
+  },
+};
+
 export function useGeminiVoice({
   roomId,
   userId,
-  voice = 'Puck',
+  voice = 'USA',
   systemPrompt,
   enabled = true,
 }: UseGeminiVoiceOptions): UseGeminiVoiceReturn {
@@ -77,6 +90,7 @@ export function useGeminiVoice({
           user_id: userId,
           room_id: roomId,
           voice,
+          accent: voice,
         }),
       });
 
@@ -235,6 +249,13 @@ export function useGeminiVoice({
           setIsConnected(true);
           setError(null);
 
+          const accentPreset = ACCENT_CONFIG[voice] || {
+            nativeVoice: ['Puck', 'Charon', 'Kore', 'Fenrir', 'Aoede'].includes(voice) ? voice : 'Puck',
+            systemPrompt: systemPrompt || "You are an AI voice accent converter. Speak in an authentic American English (USA accent).",
+          };
+          const targetVoice = accentPreset.nativeVoice;
+          const targetPrompt = systemPrompt || accentPreset.systemPrompt;
+
           if (isDirect) {
             // Direct Gemini Live setup frame
             const setupMsg = {
@@ -245,7 +266,7 @@ export function useGeminiVoice({
                   speech_config: {
                     voice_config: {
                       prebuilt_voice_config: {
-                        voice_name: voice || 'Puck',
+                        voice_name: targetVoice,
                       },
                     },
                   },
@@ -253,7 +274,7 @@ export function useGeminiVoice({
                 system_instruction: {
                   parts: [
                     {
-                      text: systemPrompt || 'You are an AI voice transformer. Speak in Puck voice.',
+                      text: targetPrompt,
                     },
                   ],
                 },
@@ -265,8 +286,9 @@ export function useGeminiVoice({
             socket.send(
               JSON.stringify({
                 token: tokenData.token,
-                voice: voice || tokenData.voice || 'Puck',
-                system_prompt: systemPrompt || 'You are an AI voice transformer. Speak in Puck voice.',
+                voice: targetVoice,
+                accent: voice,
+                system_prompt: targetPrompt,
                 model: tokenData.model || 'models/gemini-2.5-flash-native-audio-latest',
               })
             );

@@ -41,7 +41,7 @@ export function useWebRTC({
     process.env.NEXT_PUBLIC_SIGNALING_SERVER ||
     'http://localhost:3001',
   useAIVoice = false,
-  voice = 'Puck',
+  voice = 'USA',
 }: UseWebRTCOptions) {
   // State
   const [participants, setParticipants] = useState<Map<string, Participant>>(new Map());

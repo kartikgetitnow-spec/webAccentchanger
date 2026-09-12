@@ -1,17 +1,20 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Sparkles, Volume2, AlertCircle, CheckCircle2, Loader2 } from 'lucide-react';
 import { useVoiceStore } from '@/store/useVoiceStore';
 import { useCallStore } from '@/store/useCallStore';
 
-const AVAILABLE_VOICES = [
-  { id: 'Puck', label: 'Puck', description: 'Energetic, playful & expressive' },
-  { id: 'Charon', label: 'Charon', description: 'Deep, calm & authoritative' },
-  { id: 'Kore', label: 'Kore', description: 'Warm, gentle & clear' },
-  { id: 'Fenrir', label: 'Fenrir', description: 'Bold, resonant & intense' },
-  { id: 'Aoede', label: 'Aoede', description: 'Melodic, dynamic & bright' },
+export interface VoiceOption {
+  id: string;
+  label: string;
+  description: string;
+}
+
+export const AVAILABLE_VOICES: VoiceOption[] = [
+  { id: 'USA', label: 'USA Accent', description: 'American English pronunciation & tone' },
+  { id: 'UK', label: 'UK Accent', description: 'British English pronunciation & tone' },
 ];
 
 interface AIVoicePanelProps {
@@ -26,6 +29,17 @@ export const AIVoicePanel: React.FC<AIVoicePanelProps> = ({
   const { useAIVoice, selectedVoice, setUseAIVoice, setSelectedVoice } = useVoiceStore();
   const { geminiStatus, geminiError } = useCallStore();
   const [isPreviewing, setIsPreviewing] = useState(false);
+  const audioPreviewRef = useRef<HTMLAudioElement | null>(null);
+
+  // Stop preview on component unmount
+  useEffect(() => {
+    return () => {
+      if (audioPreviewRef.current) {
+        audioPreviewRef.current.pause();
+        audioPreviewRef.current = null;
+      }
+    };
+  }, []);
 
   const handleToggle = () => {
     const nextVal = !useAIVoice;
@@ -35,44 +49,88 @@ export const AIVoicePanel: React.FC<AIVoicePanelProps> = ({
 
   const handleVoiceChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     setSelectedVoice(e.target.value);
+    // If preview is playing, stop it when accent changes
+    if (audioPreviewRef.current) {
+      audioPreviewRef.current.pause();
+      audioPreviewRef.current = null;
+      setIsPreviewing(false);
+    }
   };
 
   const handlePreview = () => {
     if (typeof window === 'undefined') return;
+
+    // Toggle off if currently playing
+    if (isPreviewing && audioPreviewRef.current) {
+      audioPreviewRef.current.pause();
+      audioPreviewRef.current = null;
+      setIsPreviewing(false);
+      return;
+    }
+
     setIsPreviewing(true);
 
-    try {
-      const AudioCtx =
-        window.AudioContext ||
-        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      if (!AudioCtx) {
-        setIsPreviewing(false);
-        return;
-      }
-      const ctx = new AudioCtx();
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(440, ctx.currentTime);
-      osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.3);
-
-      gain.gain.setValueAtTime(0.15, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
-
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-
-      osc.start();
-      osc.stop(ctx.currentTime + 0.35);
-
-      setTimeout(() => {
-        setIsPreviewing(false);
-        ctx.close().catch(() => {});
-      }, 400);
-    } catch {
-      setIsPreviewing(false);
+    let baseUrl =
+      process.env.NEXT_PUBLIC_GEMINI_SERVER_URL || 'https://65-2-161-214.sslip.io';
+    if (baseUrl.includes('65.2.161.214') && !baseUrl.includes('sslip.io')) {
+      baseUrl = 'https://65-2-161-214.sslip.io';
     }
+
+    const previewUrl = `/api/voice-preview?voice=${encodeURIComponent(selectedVoice)}`;
+    const directUrl = `${baseUrl.replace(/\/+$/, '')}/voice-preview?voice=${encodeURIComponent(selectedVoice)}`;
+
+    const audio = new Audio(previewUrl);
+    audioPreviewRef.current = audio;
+
+    audio.onended = () => {
+      setIsPreviewing(false);
+      audioPreviewRef.current = null;
+    };
+
+    audio.onerror = () => {
+      // Fallback: try direct backend URL
+      const directAudio = new Audio(directUrl);
+      audioPreviewRef.current = directAudio;
+
+      directAudio.onended = () => {
+        setIsPreviewing(false);
+        audioPreviewRef.current = null;
+      };
+
+      directAudio.onerror = () => {
+        // Fallback: Synthetic tone
+        try {
+          const AudioCtx =
+            window.AudioContext ||
+            (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+          if (AudioCtx) {
+            const ctx = new AudioCtx();
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(selectedVoice === 'UK' ? 380 : 440, ctx.currentTime);
+            gain.gain.setValueAtTime(0.15, ctx.currentTime);
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.start();
+            osc.stop(ctx.currentTime + 0.35);
+            setTimeout(() => ctx.close().catch(() => {}), 400);
+          }
+        } catch {}
+        setIsPreviewing(false);
+        audioPreviewRef.current = null;
+      };
+
+      directAudio.play().catch(() => {
+        setIsPreviewing(false);
+        audioPreviewRef.current = null;
+      });
+    };
+
+    audio.play().catch(() => {
+      setIsPreviewing(false);
+      audioPreviewRef.current = null;
+    });
   };
 
   return (
@@ -176,12 +234,13 @@ export const AIVoicePanel: React.FC<AIVoicePanelProps> = ({
               </p>
             )}
 
-            {/* Voice Dropdown and Preview */}
+            {/* Accent Dropdown and Preview */}
             <div className="grid grid-cols-1 sm:grid-cols-[1fr,auto] gap-2 items-center">
               <div className="relative">
                 <select
                   value={selectedVoice}
                   onChange={handleVoiceChange}
+                  aria-label="Select AI Accent"
                   className="w-full appearance-none rounded-xl border border-zinc-700/80 bg-zinc-800/90 px-3 py-2 text-xs text-zinc-100 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                 >
                   {AVAILABLE_VOICES.map((v) => (
@@ -195,11 +254,24 @@ export const AIVoicePanel: React.FC<AIVoicePanelProps> = ({
               <button
                 type="button"
                 onClick={handlePreview}
-                disabled={isPreviewing}
-                className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-zinc-700 bg-zinc-800 px-3 py-2 text-xs font-medium text-zinc-300 hover:bg-zinc-700/80 hover:text-white transition-colors disabled:opacity-50"
+                className={`inline-flex items-center justify-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-medium transition-colors ${
+                  isPreviewing
+                    ? 'border-indigo-500/50 bg-indigo-500/20 text-indigo-300'
+                    : 'border-zinc-700 bg-zinc-800 text-zinc-300 hover:bg-zinc-700/80 hover:text-white'
+                }`}
+                title={`Listen to sample audio for ${selectedVoice === 'UK' ? 'UK Accent' : 'USA Accent'}`}
               >
-                <Volume2 className="h-3.5 w-3.5" />
-                <span>{isPreviewing ? 'Testing...' : 'Test Tone'}</span>
+                {isPreviewing ? (
+                  <>
+                    <Loader2 className="h-3.5 w-3.5 animate-spin text-indigo-400" />
+                    <span>Playing Sample...</span>
+                  </>
+                ) : (
+                  <>
+                    <Volume2 className="h-3.5 w-3.5 text-indigo-400" />
+                    <span>Listen Preview</span>
+                  </>
+                )}
               </button>
             </div>
           </motion.div>
