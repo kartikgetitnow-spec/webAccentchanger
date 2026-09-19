@@ -25,6 +25,7 @@ function getIceServers() {
   const stunServers = [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:openrelay.metered.ca:80' },
   ];
 
   if (process.env.TURN_URL) {
@@ -36,7 +37,26 @@ function getIceServers() {
     return [...stunServers, turn];
   }
 
-  return stunServers;
+  // Fallback to Metered Open Relay TURN for testing mobile NAT traversal
+  const openRelayTurn = [
+    {
+      urls: 'turn:openrelay.metered.ca:80',
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443',
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
+  ];
+
+  return [...stunServers, ...openRelayTurn];
 }
 
 const corsMiddleware = cors({
@@ -79,6 +99,7 @@ const io = new Server(server, {
     methods: ['GET', 'POST'],
     credentials: true,
   },
+  transports: ['websocket', 'polling'],
   pingTimeout: 20000,
   pingInterval: 25000,
 });
@@ -93,9 +114,14 @@ const emptyRoomTimers = new Map();
 const signalRateLimits = new Map();
 
 const RATE_LIMIT_WINDOW_MS = 2000;
-const MAX_SIGNALS_PER_WINDOW = 40;
+const MAX_SIGNALS_PER_WINDOW = 120; // Increased to 120 to accommodate multi-interface trickle ICE bursts
 
-function checkSignalRateLimit(socketId) {
+function checkSignalRateLimit(socketId, signalType) {
+  // Never throttle critical session description negotiations (OFFER / ANSWER)
+  if (signalType === 'OFFER' || signalType === 'ANSWER') {
+    return true;
+  }
+
   const now = Date.now();
   let entry = signalRateLimits.get(socketId);
 
@@ -107,10 +133,53 @@ function checkSignalRateLimit(socketId) {
 
   entry.count++;
   if (entry.count > MAX_SIGNALS_PER_WINDOW) {
-    return false; // Rate limit exceeded
+    return false; // Rate limit exceeded for candidate spam
   }
 
   return true;
+}
+
+// Cleanly removes a user from a room, notifies peers, and sets empty room timer
+function handleUserLeave(socket, targetRoomId) {
+  const roomId = targetRoomId || socketRoomMap.get(socket.id);
+  if (!roomId || !rooms.has(roomId)) return;
+
+  const roomParticipants = rooms.get(roomId);
+  if (roomParticipants.has(socket.id)) {
+    roomParticipants.delete(socket.id);
+
+    // Emit both userId and socketId for full client compatibility
+    socket.to(roomId).emit('user-left', {
+      userId: socket.id,
+      socketId: socket.id,
+    });
+
+    logger.info(
+      { socketId: socket.id, roomId, remaining: roomParticipants.size },
+      'User removed from room'
+    );
+
+    // If room is now empty, schedule deletion after 60s
+    if (roomParticipants.size === 0) {
+      logger.info(
+        { roomId, timeoutMs: EMPTY_ROOM_TIMEOUT_MS },
+        'Room is empty. Scheduled for cleanup in 60 seconds'
+      );
+
+      const timer = setTimeout(() => {
+        if (rooms.has(roomId) && rooms.get(roomId).size === 0) {
+          rooms.delete(roomId);
+          logger.info({ roomId }, 'Empty room cleaned up and deleted');
+        }
+        emptyRoomTimers.delete(roomId);
+      }, EMPTY_ROOM_TIMEOUT_MS);
+
+      emptyRoomTimers.set(roomId, timer);
+    }
+  }
+
+  socket.leave(roomId);
+  socketRoomMap.delete(socket.id);
 }
 
 io.on('connection', (socket) => {
@@ -121,6 +190,16 @@ io.on('connection', (socket) => {
     if (!roomId) {
       socket.emit('room-error', { message: 'Invalid room ID' });
       return;
+    }
+
+    // Clean up previous room if user switched rooms without disconnecting
+    const previousRoom = socketRoomMap.get(socket.id);
+    if (previousRoom && previousRoom !== roomId) {
+      logger.info(
+        { socketId: socket.id, previousRoom, newRoom: roomId },
+        'User switching rooms. Leaving previous room cleanly.'
+      );
+      handleUserLeave(socket, previousRoom);
     }
 
     // Cancel empty room cleanup if someone joins within 60s
@@ -217,8 +296,8 @@ io.on('connection', (socket) => {
 
   // Handle signaling relay with rate limiting
   socket.on('signal', (data) => {
-    if (!checkSignalRateLimit(socket.id)) {
-      logger.warn({ socketId: socket.id }, 'Signal rate limit exceeded; throttling message');
+    if (!checkSignalRateLimit(socket.id, data.type)) {
+      logger.warn({ socketId: socket.id, type: data.type }, 'Signal rate limit exceeded; throttling message');
       return;
     }
 
@@ -251,50 +330,22 @@ io.on('connection', (socket) => {
     logger.debug({ socketId: socket.id, roomId, isMuted }, 'User toggled mute');
   });
 
+  // Handle explicit leave-room
+  socket.on('leave-room', ({ roomId }) => {
+    logger.info({ socketId: socket.id, roomId }, 'User requested to leave room');
+    handleUserLeave(socket, roomId);
+  });
+
   // Handle disconnection & scheduled 60s room cleanup
   socket.on('disconnect', () => {
     signalRateLimits.delete(socket.id);
-    const roomId = socketRoomMap.get(socket.id);
-
-    if (roomId && rooms.has(roomId)) {
-      const roomParticipants = rooms.get(roomId);
-      roomParticipants.delete(socket.id);
-
-      socket.to(roomId).emit('user-left', {
-        userId: socket.id,
-      });
-
-      logger.info(
-        { socketId: socket.id, roomId, remaining: roomParticipants.size },
-        'User left room'
-      );
-
-      // If room is now empty, schedule deletion after 60s
-      if (roomParticipants.size === 0) {
-        logger.info(
-          { roomId, timeoutMs: EMPTY_ROOM_TIMEOUT_MS },
-          'Room is empty. Scheduled for cleanup in 60 seconds'
-        );
-
-        const timer = setTimeout(() => {
-          if (rooms.has(roomId) && rooms.get(roomId).size === 0) {
-            rooms.delete(roomId);
-            logger.info({ roomId }, 'Empty room cleaned up and deleted');
-          }
-          emptyRoomTimers.delete(roomId);
-        }, EMPTY_ROOM_TIMEOUT_MS);
-
-        emptyRoomTimers.set(roomId, timer);
-      }
-    }
-
-    socketRoomMap.delete(socket.id);
+    handleUserLeave(socket);
     logger.info({ socketId: socket.id }, 'Socket client disconnected');
   });
 });
 
-server.listen(PORT, () => {
-  logger.info(`Signaling server listening on http://localhost:${PORT}`);
+server.listen(PORT, '0.0.0.0', () => {
+  logger.info(`Signaling server listening on http://0.0.0.0:${PORT}`);
   logger.info(`Health check at http://localhost:${PORT}/health`);
   logger.info(`ICE configuration at http://localhost:${PORT}/ice-servers`);
 });

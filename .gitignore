@@ -36,3 +36,7 @@ server/.env
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# mobile project symlink
+react-native
+
